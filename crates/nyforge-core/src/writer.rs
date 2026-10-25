@@ -67,8 +67,15 @@ pub struct WriteOptions {
     pub unmount: bool,
     /// Clear the last MiB of the drive so a stale backup partition table can't confuse the OS.
     pub wipe_tail: bool,
+    /// Write the first MiB (the partition table) last. Windows re-reads the partition table the moment it changes and
+    /// then mounts the new partitions, after which it refuses ("Access denied") every further write into them.
+    /// balenaEtcher found the same and does the same. Default: on for Windows only.
+    pub defer_head: bool,
     pub progress_interval: Duration,
 }
+
+/// How much of the start of the image is held back by `defer_head`.
+const HEAD_BYTES: u64 = 1 << 20;
 
 impl Default for WriteOptions {
     fn default() -> Self {
@@ -79,6 +86,7 @@ impl Default for WriteOptions {
             skip_zeros: true,
             unmount: true,
             wipe_tail: true,
+            defer_head: cfg!(windows),
             progress_interval: Duration::from_millis(120),
         }
     }
@@ -300,6 +308,7 @@ fn target_thread(
     let mut written_end = 0u64;
     let mut since_sync = 0u64;
     let mut zero_unsupported = false;
+    let mut held_head: Vec<(u64, Vec<u8>)> = vec![];
     loop {
         let chunk = match rx.recv_timeout(Duration::from_millis(100)) {
             Ok(c) => c,
@@ -333,7 +342,8 @@ fn target_thread(
         }
 
         let mut handled = false;
-        if chunk.zero && opts.skip_zeros {
+        let holds = opts.defer_head && chunk.offset < HEAD_BYTES;
+        if chunk.zero && opts.skip_zeros && !holds {
             match t.kind {
                 TargetKind::File => handled = true, // becomes a hole; set_len() at the end extends it
                 TargetKind::BlockDevice if !zero_unsupported => {
@@ -372,10 +382,14 @@ fn target_thread(
                 }
             }
             let data = if n > chunk.len { &chunk.padded_data()[..n] } else { &chunk.data()[..n] };
-            if let Err(e) = write_all_at(&file, data, chunk.offset) {
-                return fail(NyError::from_io(&e, &what), written_end);
+            if holds {
+                held_head.push((chunk.offset, data.to_vec()));
+            } else {
+                if let Err(e) = write_all_at(&file, data, chunk.offset) {
+                    return fail(NyError::from_io(&e, &what), written_end);
+                }
+                since_sync += n as u64;
             }
-            since_sync += n as u64;
         }
         written_end = end;
         me.bytes.store(written_end, Ordering::Relaxed);
@@ -394,6 +408,12 @@ fn target_thread(
     }
 
     me.state.store(ST_FINISHING, Ordering::SeqCst);
+    // The partition table goes in last (see `defer_head`).
+    for (off, data) in &held_head {
+        if let Err(e) = write_all_at(&file, data, *off) {
+            return fail(NyError::from_io(&e, &what), written_end);
+        }
+    }
     let total = shared.total_len.load(Ordering::SeqCst);
     if t.kind == TargetKind::File {
         if let Err(e) = file.set_len(total) {
@@ -694,6 +714,21 @@ mod tests {
         }
         assert!(ev.iter().any(|e| matches!(e, Event::Progress(_))));
         assert!(matches!(ev.last().unwrap(), Event::Finished { ok: true, .. }));
+    }
+
+    #[test]
+    fn deferring_the_start_of_the_image_gives_the_same_bytes() {
+        let d = tdir("defer");
+        // Zeros at the start (skipped normally), data after: both kinds of chunk must come out right.
+        let mut data = vec![0u8; 3 << 20];
+        data.extend(pattern(6 * 1024 * 1024 + 77));
+        let img = d.join("in.img");
+        std::fs::write(&img, &data).unwrap();
+        let out = d.join("out.img");
+        let opts = WriteOptions { defer_head: true, ..WriteOptions::default() };
+        let r = write_image(crate::image::open_file(&img).unwrap(), vec![Target::file(&out)], &opts, Arc::new(AtomicBool::new(false)), &mut |_| {}).unwrap();
+        assert!(r.all_ok());
+        assert_eq!(std::fs::read(&out).unwrap(), data);
     }
 
     #[test]

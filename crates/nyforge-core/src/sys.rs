@@ -357,9 +357,72 @@ mod imp {
         false
     }
 
+    /// `IOCTL_STORAGE_GET_DEVICE_NUMBER`: which physical disk does this handle live on?
+    const IOCTL_STORAGE_GET_DEVICE_NUMBER: u32 = 0x002D_1080;
+    const FILE_DEVICE_DISK: u32 = 7;
+
+    #[repr(C)]
+    #[derive(Default)]
+    #[allow(dead_code)]
+    struct StorageDeviceNumber {
+        device_type: u32,
+        device_number: u32,
+        partition_number: u32,
+    }
+
+    /// The physical disk number a volume (or disk) handle belongs to.
+    fn disk_of_handle(f: &File) -> Option<u32> {
+        let mut sdn = StorageDeviceNumber::default();
+        let mut returned = 0u32;
+        let ok = unsafe {
+            DeviceIoControl(
+                f.as_raw_handle() as _,
+                IOCTL_STORAGE_GET_DEVICE_NUMBER,
+                std::ptr::null(),
+                0,
+                &mut sdn as *mut StorageDeviceNumber as *mut core::ffi::c_void,
+                std::mem::size_of::<StorageDeviceNumber>() as u32,
+                &mut returned,
+                std::ptr::null_mut(),
+            ) != 0
+        };
+        (ok && sdn.device_type == FILE_DEVICE_DISK).then_some(sdn.device_number)
+    }
+
+    /// Every volume of this disk, by its permanent name (`\\?\Volume{...}`), whether or not it has a drive letter.
+    /// A partition without a letter (what a hybrid ISO leaves behind) is still a mounted volume, and Windows refuses
+    /// raw writes over it ("Access denied") until it is dismounted.
+    fn volumes_of_disk(disk: u32) -> Vec<String> {
+        use windows_sys::Win32::Foundation::INVALID_HANDLE_VALUE;
+        use windows_sys::Win32::Storage::FileSystem::{FindFirstVolumeW, FindNextVolumeW, FindVolumeClose};
+        let mut found = vec![];
+        let mut buf = [0u16; 261];
+        unsafe {
+            let h = FindFirstVolumeW(buf.as_mut_ptr(), buf.len() as u32);
+            if h == INVALID_HANDLE_VALUE {
+                return found;
+            }
+            loop {
+                let n = buf.iter().position(|&c| c == 0).unwrap_or(buf.len());
+                let name = String::from_utf16_lossy(&buf[..n]).trim_end_matches('\\').to_string();
+                if let Ok(f) = OpenOptions::new().access_mode(0).share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE).open(&name) {
+                    if disk_of_handle(&f) == Some(disk) {
+                        found.push(name);
+                    }
+                }
+                if FindNextVolumeW(h, buf.as_mut_ptr(), buf.len() as u32) == 0 {
+                    break;
+                }
+            }
+            FindVolumeClose(h);
+        }
+        found
+    }
+
     /// Lock and dismount every volume on the drive so Windows lets go of it.
     pub fn prepare_device(drive: &Drive, unmount: bool) -> Result<DevicePrep> {
         let mut prep = DevicePrep::default();
+        let mut taken: Vec<String> = vec![];
         for mp in drive.mounted_points() {
             if !unmount {
                 return Err(NyError::new(ErrorKind::Busy, format!("{} is in use ({mp}).", drive.path))
@@ -377,15 +440,42 @@ mod imp {
                 .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE)
                 .open(&vol_path)
                 .map_err(|e| NyError::from_io(&e, &format!("opening volume {letter}:")))?;
-            if !ioctl(&f, FSCTL_LOCK_VOLUME) {
+            if !lock_with_retries(&f) {
                 return Err(NyError::new(ErrorKind::Busy, format!("Windows would not release {letter}: (a program is still using it)."))
                     .with_hint("Close File Explorer windows and any program showing its files, then retry."));
             }
             ioctl(&f, FSCTL_DISMOUNT_VOLUME);
+            taken.push(vol_path);
             prep.unmounted.push(mp.to_string());
             prep.guards.push(f);
         }
+        // Then every other volume on the disk (the ones without a drive letter). Best effort: a volume that
+        // cannot be locked is still dismounted, and nothing here fails the operation by itself.
+        if unmount {
+            if let Some(disk) = crate::device::windows::disk_number(&drive.path) {
+                for name in volumes_of_disk(disk) {
+                    if let Ok(f) = OpenOptions::new().read(true).write(true).share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE).open(&name) {
+                        let _ = lock_with_retries(&f);
+                        ioctl(&f, FSCTL_DISMOUNT_VOLUME);
+                        taken.push(name);
+                        prep.guards.push(f);
+                    }
+                }
+            }
+        }
+        let _ = taken;
         Ok(prep)
+    }
+
+    /// Windows sometimes needs a moment (an indexer or Explorer still holding the volume): try a few times.
+    fn lock_with_retries(f: &File) -> bool {
+        for _ in 0..6 {
+            if ioctl(f, FSCTL_LOCK_VOLUME) {
+                return true;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(400));
+        }
+        false
     }
 
     pub fn finish_device(path: &Path) {

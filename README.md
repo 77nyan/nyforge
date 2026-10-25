@@ -26,8 +26,9 @@ The window shrinks to a quarter-screen tile, so it works in tiling window manage
 System, internal and virtual disks are refused by the engine, with no override. Every write asks first and re-checks
 the drive right before starting.
 
-> **Version 0.1, young software.** Read [What has been tested](#what-has-been-tested) before trusting it with a
-> drive that holds anything you care about.
+> **Young software.** Tested on Linux and Windows 11 on real hardware; **not tested on macOS** (only built and
+> checked by automatic tests). Read [What has been tested](#what-has-been-tested) before trusting it with a drive
+> that holds anything you care about.
 
 ## Install
 
@@ -42,7 +43,8 @@ sudo ./install.sh        # for everyone on this computer
 
 From source (git clone or `nyforge-source.tar.gz`) it builds first, which needs [Rust](https://rustup.rs) 1.88+, Git
 and a C compiler, and takes a few minutes. Then open **NyForge** from the applications menu or run `nyforge-gui`.
-Check with `nyforge --version`; remove with `./install.sh --user --uninstall` (or `sudo ./install.sh --uninstall`).
+Check with `nyforge --version`. To remove it, run **`nyforge-uninstall`** (the installer puts it next to the program;
+`sudo nyforge-uninstall` also removes an all-users copy).
 
 * **"Permission denied"**: you ran it without `--user` or `sudo`. Add one.
 * **"command not found"**: wrong folder. `cd` to the folder that holds `install.sh`.
@@ -56,11 +58,18 @@ Check with `nyforge --version`; remove with `./install.sh --user --uninstall` (o
 
 ### Windows
 
-Download the `.zip` from **Releases**, extract it, then **double-click `install.cmd`**, and open **NyForge** from the Start
-menu. (Windows blocks the unsigned `install.ps1` itself with "is not digitally signed"; `install.cmd` starts it safely.
-Remove NyForge with `install.cmd -Uninstall` in a terminal.) Writing to a drive needs administrator rights; the app
-offers **Restart as administrator** (UAC prompt). The program is not code-signed yet, so SmartScreen may warn:
-**More info > Run anyway**.
+1. Download `nyforge-<version>-windows-x86_64.zip` from **Releases** and **Extract All**.
+2. **Add the install folder to Windows Defender's exclusions** (see below), or Defender may delete or block NyForge's
+   drive access. The folder is `C:\Users\<you>\AppData\Local\Programs\NyForge` (the installer prints it).
+3. Double-click **`install.cmd`** and open **NyForge** from the Start menu. To remove it: *Settings > Apps > NyForge >
+   Uninstall* (or run `uninstall.cmd` in the install folder).
+
+Writing to a drive needs administrator rights; the app offers **Restart as administrator** (UAC prompt). The program is
+not code-signed yet, so SmartScreen may warn: **More info > Run anyway**.
+
+**Defender exclusion:** Start > *Windows Security* > *Virus & threat protection* > *Manage settings* > *Exclusions* >
+*Add or remove exclusions* > *Add an exclusion* > *Folder*, then pick the folder above. Or, in PowerShell as
+administrator: `Add-MpPreference -ExclusionPath "$env:LOCALAPPDATA\Programs\NyForge"`.
 
 ### Downloads (Releases page)
 
@@ -76,45 +85,34 @@ Each has a `.sha256` file: `sha256sum -c <file>.sha256` (Linux), `shasum -a 256 
 
 ### What Linux needs
 
-NyForge brings its own FAT32/exFAT code, so there is little to install; most desktops already have all of this.
-On Arch / Omarchy (anything installed is skipped):
+Almost nothing: NyForge has its own FAT32/exFAT code, and most desktops already have the rest. On Arch / Omarchy:
 
 ```sh
 sudo pacman -S --needed mesa libxkbcommon wayland libx11 polkit xdg-desktop-portal xdg-desktop-portal-hyprland e2fsprogs ntfs-3g
 ```
 
-| Needed for | Debian / Ubuntu | Fedora |
-|---|---|---|
-| App window (OpenGL, Wayland or X11) | `libgl1 libxkbcommon0 libwayland-client0 libx11-6` | `mesa-libGL libxkbcommon wayland-libs-client libX11` |
-| Password window when writing | `policykit-1` | `polkit` |
-| File chooser | `xdg-desktop-portal` + a backend (`-gtk`, `-gnome`, `-kde`, `-hyprland`) | same |
-| ext4 formatting (optional) | `e2fsprogs` | `e2fsprogs` |
-| NTFS formatting (optional) | `ntfs-3g` | `ntfs-3g` |
-
-Without `e2fsprogs` or `ntfs-3g` the app just does not offer ext4 or NTFS. Building also needs
-`sudo pacman -S --needed rustup base-devel git && rustup default stable`. Writing asks for your password through
-polkit; the app itself never runs as root. You can also drag an image onto the NyFlash window.
-
-Manual build: `cargo build --release -p nyforge -p nyforge-gui`, then `./target/release/nyforge-gui`. Keep `nyforge`
-and `nyforge-gui` in the same folder: the app finds the engine next to itself.
+Debian/Ubuntu: `libgl1 libxkbcommon0 libwayland-client0 libx11-6 policykit-1 xdg-desktop-portal` (plus a portal backend:
+`-gtk`, `-gnome`, `-kde` or `-hyprland`). Fedora: `mesa-libGL libxkbcommon wayland-libs-client libX11 polkit
+xdg-desktop-portal`. `e2fsprogs` (ext2/3/4) and `ntfs-3g` (NTFS) are optional: without them the app does not offer
+those. Building needs `rustup base-devel git`. Writing asks for your password through polkit; the app never runs as
+root. Manual build: `cargo build --release -p nyforge -p nyforge-gui`; keep both programs in one folder.
 
 ## Using the app
 
 * **NyFlash**: choose an image (button or drag and drop), choose a drive, **Flash...**, confirm. Real progress, safe stop.
   No drive is ever pre-selected.
 * **NyBoot**: choose a drive, install NyBoot (erases it), then **Add images**. Removing an image deletes only that file;
-  **Reinstall** erases the drive. "Update bootloader" is shown disabled (no in-place update yet). Each image is checked
-  when added; some (e.g. Windows installers) cannot boot from a loop device and NyForge says so.
+  **Reinstall** erases the drive. "Update bootloader" is disabled (no in-place update yet). Images are checked when
+  added; Windows installers cannot boot from a loop device and NyForge says so.
   * A drive with `NYBOOT` / `NYBOOT-EFI` partitions is marked "NyBoot drive" and chosen for you when it is the only one.
-  * **No app needed to add images:** the big `NYBOOT` partition is plain exFAT. Copy `.iso` files onto it with your
-    file manager, in any folder; they appear in the boot menu next start (tested in an emulator with an independent
-    exFAT driver, fragmented files, spaces in names, sub-folders, BIOS and UEFI).
-  * **Unknown ISOs:** no recipe needed per distro. Unknown images get a generic start (kernel + initrd found on the
-    image); images with their own `grub.cfg` can use it. This is why distros Ventoy-style tools struggle with, such as
-    CachyOS, are meant to work (unproven on real ISOs).
-  * **Start-up:** Arch-family images (Arch, CachyOS, EndeavourOS...) are started by NyBoot itself, because their own
-    menu searches every partition of every disk first and is slow. For an image's own menu put `<image>.iso.nyboot.cfg`
-    next to it with `set nb_profile="loopbackcfg"`; the same file can add options, e.g. `set nb_params="nomodeset"`.
+  * **No app needed to add images:** the big `NYBOOT` partition is plain exFAT. Copy `.iso` files onto it with your file
+    manager, in any folder; they appear in the boot menu next start (tested in an emulator, BIOS and UEFI).
+  * **Unknown ISOs:** no per-distro recipe needed; unknown images get a generic start (kernel + initrd found on the
+    image) and images with their own `grub.cfg` can use it. That is how distros Ventoy-style tools struggle with, such
+    as CachyOS, are meant to work (unproven on real ISOs).
+  * Arch-family images are started by NyBoot itself (their own menu searches every disk first and is slow). For an
+    image's own menu put `<image>.iso.nyboot.cfg` next to it with `set nb_profile="loopbackcfg"`; the same file can add
+    options, e.g. `set nb_params="nomodeset"`.
 * **NyFormat**: choose a drive, a filesystem (only ones this system can make), a label and cluster size, then
   **Format!**. Options: **Quick format**, **Check device for bad blocks** (1 to 4 passes), and **Restore full capacity**
   for a drive that shows only a few MB after flashing an ISO. A cancelled flash leaves such a drive; this fixes it.
@@ -151,64 +149,35 @@ Exit codes: 0 success, 1 failure, 2 bad usage, 130 cancelled.
 
 ## Build and test
 
-```sh
-cargo build --release -p nyforge -p nyforge-gui
-cargo test -p nyforge-core
-# QEMU boot tests need qemu-system-x86_64, OVMF, parted, mtools, dosfstools, grub, wimlib, xorriso:
-tools/make-test-kernel.sh /some/dir
-NYFORGE_TEST_KERNEL_DIR=/some/dir cargo test -p nyforge-core --test nyboot_qemu --test winmedia_qemu -- --ignored --test-threads=1
-```
-
-GRUB code in `assets/grub` is prebuilt (`tools/build-grub-assets.sh` rebuilds it from distro GRUB).
+`cargo build --release -p nyforge -p nyforge-gui`, then `cargo test -p nyforge-core`. The QEMU boot tests need
+`qemu-system-x86_64`, OVMF, `parted`, `mtools`, `dosfstools`, `grub`, `wimlib`, `xorriso` and are run with
+`cargo test -p nyforge-core --test nyboot_qemu --test winmedia_qemu -- --ignored --test-threads=1`
+(`tools/make-test-kernel.sh <dir>` builds the kernel; set `NYFORGE_TEST_KERNEL_DIR`). GRUB code in `assets/grub` is
+prebuilt by `tools/build-grub-assets.sh`.
 
 ## What has been tested
 
-**Run and passing on Linux x86-64** (automated tests, image files and a loop device, never a physical stick):
-writing, zero-skipping, multi-target, cancellation, decompression; ISO9660/UDF readers; splitting `install.wim` and
-the FAT32 result (`fsck.vfat`, `wimlib-imagex`); QEMU boots of a NyBoot drive with a real kernel and of a
-Windows-style stick (BIOS + UEFI, stand-in Windows files); first-boot files against cloud-init and Raspberry Pi
-formats; `nyforge format` (FAT16/32, exFAT, NTFS, ext4 checked with `fsck.vfat`, `fsck.exfat`, `e2fsck`, `ntfsfix`,
-`blkid`; MBR and GPT checked with `parted`; capacity test against simulated fakes; O_DIRECT path and wipes on a loop
-device; refusal of system, internal, virtual and read-only drives); the desktop app under a virtual display with real
-engine runs (flash and compare byte for byte, NyBoot install/add/remove, NyFormat, failed runs, drive removed
-mid-way, closing during a write, keyboard use, the Windows "restart as administrator" notice previewed on Linux);
-NyBoot file-manager drop-in; and the portable glibc 2.17 build starting on Linux.
-
-**Written to be portable, unit-tested on Linux, never run on the real system:** the macOS and Windows host code.
-The decisions that matter (macOS `diskutil` parsing and safe-drive rules, Windows PowerShell drive list, drive names,
-NTFS script) are plain functions with tests that run everywhere. The OS calls themselves (`/dev/rdiskN`,
-`F_NOCACHE`, `diskutil unmountDisk`, `DeviceIoControl`, the Windows elevation check, `Format-Volume`) were never
-compiled or run by the author. CI builds and tests on real macOS and Windows runners, lists drives there and tries
-a RAM disk (macOS) and a virtual disk (Windows); those two steps may fail until someone has seen them pass. If you
-run NyForge there first, you are the first tester: use a spare stick.
-
-**Not tested at all:**
-* The desktop app on macOS and Windows (CI only compiles it), the Linux polkit window and native file chooser, and
-  the app writing to a physical stick on any system.
-* A real Windows Setup boot (UEFI path uses the ISO's own loader; legacy BIOS `ntldr` path is less proven) and the
-  Windows 11 check-bypass answer file.
-* Real Raspberry Pi first boot (files follow Raspberry Pi's documentation; newer releases may differ for Wi-Fi,
-  hostname, time zone).
-* `nyforge format` on a real drive's partitions (the kernel creating `/dev/sdb1`; naming/waiting code is unit-tested).
-* The Linux ARM64 and musl builds (started by CI under an emulator only).
-* The quick capacity test on a counterfeit stick (full mode is proven against simulated fakes; quick mode can miss
-  one whose real size is not a multiple of the sampling distance).
-* NyBoot on real ISOs: profiles for Debian-live, Arch-family (Arch, EndeavourOS, CachyOS, Garuda, SystemRescue),
-  Manjaro, Fedora-style, own-`grub.cfg` images and the generic fallback are checked against ISO layouts in an
-  emulator, not on real ISOs. The CachyOS one follows CachyOS's published boot options.
+* **Linux (x86-64) and Windows 11, real hardware:** flashing, NyBoot, formatting and the desktop app, used by the author on
+  real USB sticks. A Windows bug found this way (a cancelled flash broke later writes) is fixed in 0.1.2.
+* **Automatic tests (Linux):** writing, cancellation, decompression, ISO readers, `install.wim` splitting, first-boot
+  files, `nyforge format` (FAT16/32, exFAT, NTFS, ext2/3/4 checked with `fsck`/`e2fsck`/`ntfsfix`/`blkid`; MBR and GPT
+  checked with `parted`; fake-capacity detection), QEMU boots of NyBoot (real kernel; ISOs copied in by a file manager
+  and by NyForge; BIOS and UEFI) and of a Windows-style stick, and the app under a virtual display.
+* **Automatic tests on GitHub (Windows, macOS, Linux ARM64/musl):** builds, unit tests, drive detection on real
+  machines, and flashing then reading back a virtual disk (and a RAM disk on macOS).
+* **Not tested by hand:** the macOS app; a real Windows Setup boot; Raspberry Pi first boot on a Pi; NyBoot with real
+  ISOs of every distro (profiles for Debian-live, Arch family incl. CachyOS, Manjaro, Fedora-style, own-`grub.cfg`
+  images and a generic fallback are checked against ISO layouts in an emulator); `nyforge format` partitions on a real
+  Linux drive; the quick capacity test on a counterfeit stick.
 
 ## Known limits
 
-* NyBoot: no Secure Boot, no persistence, no ISOs that cannot boot from a loop device. The app cannot update NyBoot in
-  place; reinstalling erases the drive.
-* MBR only for NyBoot; drives up to 2 TiB with 512-byte sectors. `install.esd` over 4 GiB is not supported.
-* Writes are not read back to verify (only the format capacity test reads back).
-* `nyforge format` makes FAT16/FAT32/exFAT itself on every system. ext2/ext3/ext4 and NTFS need Linux with `mkfs.ext4` /
-  `mkfs.ntfs` (`nyforge doctor` checks); on Windows NTFS is made by Windows (needs a partition table); macOS can make
-  neither. 512-byte-sector drives only; drives over 2 TB default to GPT, which cannot be combined with
-  `--fit-real-capacity`.
-* Windows 10 or newer (the drive list uses PowerShell's Storage module). The macOS download is one universal build whose
-  Intel half is only cross-compiled by CI. No Windows ARM64 download.
+* NyBoot: no Secure Boot, no persistence, MBR only (drives up to 2 TiB, 512-byte sectors), no in-place update;
+  `install.esd` over 4 GiB is unsupported.
+* Writes are not read back to verify (only NyFormat's bad-block / capacity check reads back).
+* `nyforge format` makes FAT16/FAT32/exFAT itself everywhere. ext2/3/4 and NTFS need Linux with `mkfs.ext*` / `mkfs.ntfs`
+  (`nyforge doctor` checks); on Windows NTFS is made by Windows; macOS can make neither. Drives over 2 TB default to GPT.
+* Windows 10 or newer. The macOS download is one universal build (its Intel half is only cross-compiled). No Windows ARM64.
 * macOS and Windows builds are not code-signed or notarized.
 
 ## Contributing and publishing

@@ -147,7 +147,7 @@ impl NyError {
                     5 => (
                         ErrorKind::Permission,
                         format!("Access denied while {what}."),
-                        Some("Run NyForge as Administrator."),
+                        Some("If this window says Administrator, Windows is still using a volume on the drive: close File Explorer and programs showing its files, unplug the drive and plug it in again, then retry. Otherwise run NyForge as Administrator."),
                     ),
                     19 => (
                         ErrorKind::ReadOnly,

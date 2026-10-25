@@ -82,7 +82,7 @@ jobs:
           $ver = (Select-String -Path Cargo.toml -Pattern '^version = "(.*)"').Matches[0].Groups[1].Value
           $name = "nyforge-$ver-windows-x86_64"
           New-Item -ItemType Directory -Path "dist/$name" -Force | Out-Null
-          Copy-Item target/release/nyforge.exe, target/release/nyforge-gui.exe, install.ps1, install.cmd, LICENSE, README.md, THIRD-PARTY.md "dist/$name"
+          Copy-Item target/release/nyforge.exe, target/release/nyforge-gui.exe, install.cmd, LICENSE, README.md, THIRD-PARTY.md "dist/$name"
           Compress-Archive -Path "dist/$name" -DestinationPath "dist/$name.zip"
           (Get-FileHash "dist/$name.zip" -Algorithm SHA256).Hash.ToLower() + "  $name.zip" | Out-File "dist/$name.zip.sha256" -Encoding ascii
       - uses: actions/upload-artifact@v4

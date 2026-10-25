@@ -22,8 +22,12 @@ jobs:
           ./install.sh --user
           ~/.local/bin/nyforge --version
           test -x ~/.local/bin/nyforge-gui
+          test -x ~/.local/bin/nyforge-uninstall
           test -f ~/.local/share/applications/nyforge.desktop
           grep -q "Exec=$HOME/.local/bin/nyforge-gui" ~/.local/share/applications/nyforge.desktop
+          ~/.local/bin/nyforge-uninstall -y
+          test ! -e ~/.local/bin/nyforge && test ! -e ~/.local/bin/nyforge-uninstall
+          test ! -e ~/.local/share/applications/nyforge.desktop
 
   # Apple Silicon runner. This is the first place the macOS code is compiled and run for real,
   # and `list` / `doctor` exercise the real `diskutil` on a real Mac.
@@ -69,6 +73,39 @@ jobs:
       - run: cargo build --locked --release -p nyforge -p nyforge-gui
       - run: cargo test --locked -p nyforge-core -p nyforge
       - run: target\release\nyforge.exe --version
+      - name: Installer (install.cmd) installs and uninstalls
+        shell: cmd
+        env:
+          NYFORGE_NO_PAUSE: "1"
+        run: |
+          call install.cmd
+          if errorlevel 1 exit /b 1
+          "%LOCALAPPDATA%\Programs\NyForge\nyforge.exe" --version
+          if errorlevel 1 exit /b 1
+          if not exist "%LOCALAPPDATA%\Programs\NyForge\uninstall.cmd" exit /b 1
+          call "%LOCALAPPDATA%\Programs\NyForge\uninstall.cmd"
+          ping -n 6 127.0.0.1 >nul
+          if exist "%LOCALAPPDATA%\Programs\NyForge" exit /b 1
+          reg query HKCU\Software\Microsoft\Windows\CurrentVersion\Uninstall\NyForge >nul 2>&1 && exit /b 1
+          exit /b 0
+      # A mounted volume WITHOUT a drive letter used to make raw writes fail with "Access denied" (what a hybrid ISO
+      # leaves behind). Makes exactly that and flashes over it. Allowed to fail until seen to pass once.
+      - name: Flash over a volume that has no drive letter
+        continue-on-error: true
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $vhd = Join-Path $env:RUNNER_TEMP 'noletter.vhd'
+          $dp = Join-Path $env:RUNNER_TEMP 'dp2.txt'
+          @("create vdisk file=`"$vhd`" maximum=64 type=fixed", "select vdisk file=`"$vhd`"", "attach vdisk", "create partition primary", "format fs=ntfs quick", "remove noerr") | Set-Content $dp -Encoding ascii
+          diskpart /s $dp
+          $n = (Get-DiskImage -ImagePath $vhd | Get-Disk).Number
+          $img = Join-Path $env:RUNNER_TEMP 'test2.img'
+          $bytes = New-Object byte[] 8388608
+          (New-Object System.Random 7).NextBytes($bytes)
+          [IO.File]::WriteAllBytes($img, $bytes)
+          target\release\nyforge.exe flash $img "\\.\PhysicalDrive$n" --allow-virtual --allow-internal -y
+          if ($LASTEXITCODE -ne 0) { throw "flash over a letterless volume failed" }
       - name: Drive detection on real Windows
         shell: pwsh
         run: |
