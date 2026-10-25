@@ -1,0 +1,29 @@
+[package]
+name = "nyforge-core"
+description = "NyForge engine: image sources, parallel writer, drive safety, NyBoot multiboot, Windows media"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+thiserror = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+crossbeam-channel = "0.5"
+flate2 = "1.1.10"
+bzip2 = "0.5.2"
+zstd = { version = "0.14.3", features = ["zstdmt"] }
+libc = "0.2.191"
+fatfs = "0.3.6"
+ureq = "3.2.1"
+getrandom = "0.3.4"
+xz2 = { version = "0.1.7", features = ["static"] }
+zip = { version = "4.2.0", default-features = false, features = ["deflate"] }
+sha-crypt = "0.5.0"
+crc32fast = "1.5"
+plist = { version = "1", default-features = false }
+
+[target."cfg(windows)".dependencies]
+windows-sys = { version = "0.61.2", features = ["Win32_Foundation", "Win32_System_IO", "Win32_Storage_FileSystem", "Win32_Security", "Win32_System_Threading"] }

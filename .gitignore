@@ -1,0 +1,9 @@
+target/
+*.img
+*.iso
+*.bin
+/dist/
+/tmp/
+
+# Shipped assets are real source inputs (embedded at build time).
+!/assets/**

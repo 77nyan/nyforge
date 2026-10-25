@@ -1,0 +1,12 @@
+[Desktop Entry]
+Type=Application
+Name=NyForge
+GenericName=USB toolkit
+Comment=Flash images, build multiboot drives and format USB drives
+Exec=@BIN@/nyforge-gui
+Icon=nyforge
+Terminal=false
+Categories=System;Utility;
+Keywords=usb;iso;flash;etcher;rufus;boot;ventoy;format;
+StartupNotify=true
+StartupWMClass=nyforge
