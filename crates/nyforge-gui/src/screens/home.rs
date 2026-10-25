@@ -32,7 +32,6 @@ pub fn ui(ui: &mut Ui, sh: &mut Shell) {
         ui.add_space(10.0);
         staged(ui, "home-title", 0.06, |ui| {
             ui.label(semibold_text("NyForge", 30.0));
-            ui.label(muted("Your USB toolkit"));
         });
         ui.add_space(26.0);
     });

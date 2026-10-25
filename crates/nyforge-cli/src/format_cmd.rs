@@ -39,6 +39,13 @@ pub struct FormatArgs {
     /// Check that the drive really holds what it claims (finds counterfeit sticks): quick (default when given) or full
     #[arg(long, value_name = "MODE", num_args = 0..=1, default_missing_value = "quick")]
     pub test_capacity: Option<String>,
+    /// Check for bad blocks (like the Windows "check device for bad blocks" option): writes and reads back the whole
+    /// drive, which also finds fake capacity. Same as --test-capacity full.
+    #[arg(long)]
+    pub check_bad_blocks: bool,
+    /// How many times to repeat that full check, 1 to 4 (each pass uses different data) [default: 1]
+    #[arg(long, value_name = "N", default_value_t = 1)]
+    pub passes: u8,
     /// If the capacity test finds a fake, format only the part that works (needs --test-capacity full)
     #[arg(long)]
     pub fit_real_capacity: bool,
@@ -188,7 +195,14 @@ pub fn run(a: FormatArgs) -> Res {
         Some(o) => Some(parse_owner(o)?),
         None => invoking_user(),
     };
-    let opts = FormatOptions { parts, scheme, wipe, capacity_test, fit_real_capacity: a.fit_real_capacity, reserve_bytes, file_size, unmount: true, owner };
+    if !(1..=4).contains(&a.passes) {
+        return bad("--passes must be 1, 2, 3 or 4.".to_string());
+    }
+    let capacity_test = if a.check_bad_blocks { CapacityTest::Full } else { capacity_test };
+    if a.passes > 1 && capacity_test != CapacityTest::Full {
+        return bad("--passes needs --check-bad-blocks (or --test-capacity full).".to_string());
+    }
+    let opts = FormatOptions { passes: a.passes, parts, scheme, wipe, capacity_test, fit_real_capacity: a.fit_real_capacity, reserve_bytes, file_size, unmount: true, owner };
 
     // ---- confirm
     if let Some(d) = &target.drive {

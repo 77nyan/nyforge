@@ -59,7 +59,19 @@ struct WinDisk {
 }
 
 fn nonempty(s: Option<String>) -> Option<String> {
-    s.map(|x| x.trim().to_string()).filter(|x| !x.is_empty())
+    // NUL characters come from PowerShell for "no value" (and leave Rust strings that Windows refuses to open).
+    s.map(|x| x.replace('\0', "").trim().to_string()).filter(|x| !x.is_empty())
+}
+
+/// A drive letter, or None. PowerShell reports a partition without a letter as the character U+0000 (which is
+/// what a partly written drive, such as one you cancelled while flashing, looks like), so only `A`-`Z` counts.
+fn drive_letter(s: Option<String>) -> Option<char> {
+    let t = nonempty(s)?;
+    let mut it = t.chars();
+    match (it.next(), it.next()) {
+        (Some(c), None) if c.is_ascii_alphabetic() => Some(c.to_ascii_uppercase()),
+        _ => None,
+    }
 }
 
 pub fn parse_get_disk_json(json: &str) -> std::result::Result<Vec<Drive>, String> {
@@ -100,7 +112,7 @@ pub fn parse_get_disk_json(json: &str) -> std::result::Result<Vec<Drive>, String
                     size: p.size.unwrap_or(0),
                     fstype: nonempty(p.fs).map(|s| s.to_ascii_lowercase()),
                     label: nonempty(p.label),
-                    mountpoints: nonempty(p.letter).map(|l| vec![format!("{l}:\\")]).unwrap_or_default(),
+                    mountpoints: drive_letter(p.letter).map(|l| vec![format!("{l}:\\")]).unwrap_or_default(),
                 })
                 .collect();
             Drive {
@@ -196,6 +208,22 @@ mod tests {
         assert_eq!(d[1].partitions[0].mountpoints, vec!["E:\\".to_string()]);
         assert_eq!(d[1].partitions[0].fstype.as_deref(), Some("fat32"));
         assert_eq!(d[2].partitions.len(), 0);
+    }
+
+    #[test]
+    fn a_nul_drive_letter_is_not_a_mount_point() {
+        // What Windows reported for a USB stick whose flash was cancelled halfway: a partition "letter" of U+0000.
+        let j = r#"[{"Number":2,"Name":"SanDisk","Size":8,"Bus":"USB","Partitions":[
+            {"Number":1,"Size":1,"Letter":"\u0000","Label":"\u0000","Fs":"\u0000"},
+            {"Number":2,"Size":1,"Letter":"?","Label":"","Fs":""},
+            {"Number":3,"Size":1,"Letter":"ab","Label":"","Fs":""},
+            {"Number":4,"Size":1,"Letter":"f","Label":"X","Fs":"FAT32"}]}]"#;
+        let d = parse_get_disk_json(j).unwrap();
+        let mp: Vec<_> = d[0].partitions.iter().map(|p| p.mountpoints.clone()).collect();
+        assert_eq!(mp, vec![vec![], vec![], vec![], vec!["F:\\".to_string()]]);
+        assert_eq!(d[0].partitions[0].label, None);
+        assert_eq!(d[0].partitions[0].fstype, None);
+        assert!(d[0].mounted_points().iter().all(|m| !m.contains('\0')));
     }
 
     #[test]

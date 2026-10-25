@@ -1,1 +1,2 @@
 BUILD_ID export-subst
+*.cmd text eol=crlf

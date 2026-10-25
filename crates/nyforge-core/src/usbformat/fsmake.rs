@@ -53,12 +53,12 @@ pub fn validate_label(fs: Fs, label: &str) -> Result<String> {
             }
             Ok(label.to_string())
         }
-        Fs::Ext4 => {
+        Fs::Ext2 | Fs::Ext3 | Fs::Ext4 => {
             if label.len() > 16 {
-                return Err(NyError::invalid("An ext4 label can have at most 16 bytes."));
+                return Err(NyError::invalid("An ext2/ext3/ext4 label can have at most 16 bytes."));
             }
             if label.chars().any(|c| c.is_control()) {
-                return Err(NyError::invalid("That ext4 label has control characters."));
+                return Err(NyError::invalid("That ext label has control characters."));
             }
             Ok(label.to_string())
         }
@@ -73,7 +73,7 @@ pub fn validate_cluster(fs: Fs, bytes: u64) -> Result<()> {
         Fs::Fat16 | Fs::Fat32 => (512, 64 << 10),
         Fs::ExFat => (512, 32 << 20),
         Fs::Ntfs => (512, 64 << 10),
-        Fs::Ext4 => (1024, 4096),
+        Fs::Ext2 | Fs::Ext3 | Fs::Ext4 => (1024, 4096),
     };
     if bytes < lo || bytes > hi {
         return Err(NyError::invalid(format!(
@@ -170,11 +170,13 @@ pub fn make_native(region: FileIo, spec: &PartSpec, label: &str, start_sector: u
 
 /// Does this filesystem need a helper program?
 pub fn needs_tool(fs: Fs) -> bool {
-    matches!(fs, Fs::Ext4 | Fs::Ntfs)
+    matches!(fs, Fs::Ext2 | Fs::Ext3 | Fs::Ext4 | Fs::Ntfs)
 }
 
 fn tool_candidates(fs: Fs) -> &'static [(&'static str, &'static [&'static str])] {
     match fs {
+        Fs::Ext2 => &[("mkfs.ext2", &[]), ("mke2fs", &["-t", "ext2"])],
+        Fs::Ext3 => &[("mkfs.ext3", &[]), ("mke2fs", &["-t", "ext3"])],
         Fs::Ext4 => &[("mkfs.ext4", &[]), ("mke2fs", &["-t", "ext4"])],
         Fs::Ntfs => &[("mkfs.ntfs", &[]), ("mkntfs", &[])],
         _ => &[],
@@ -183,7 +185,7 @@ fn tool_candidates(fs: Fs) -> &'static [(&'static str, &'static [&'static str])]
 
 fn package_hint(fs: Fs) -> &'static str {
     match fs {
-        Fs::Ext4 => "Install e2fsprogs.",
+        Fs::Ext2 | Fs::Ext3 | Fs::Ext4 => "Install e2fsprogs.",
         _ => "Install ntfs-3g (some systems call it ntfsprogs).",
     }
 }
@@ -308,9 +310,9 @@ fn ntfs_args(job: &ToolJob, dev: &Path, with_start: bool) -> Vec<String> {
 pub fn make_with_tool(job: &ToolJob, target: ToolTarget, scratch_dir: &Path) -> Result<()> {
     check_tool(job.spec.fs)?;
     match (job.spec.fs, target) {
-        (Fs::Ext4, ToolTarget::Node(node)) => run_tool(Fs::Ext4, &ext4_args(job, None, None, node)),
-        (Fs::Ext4, ToolTarget::FileRegion { path, offset }) => {
-            run_tool(Fs::Ext4, &ext4_args(job, Some(offset), Some(job.bytes / 1024), path))
+        (fs @ (Fs::Ext2 | Fs::Ext3 | Fs::Ext4), ToolTarget::Node(node)) => run_tool(fs, &ext4_args(job, None, None, node)),
+        (fs @ (Fs::Ext2 | Fs::Ext3 | Fs::Ext4), ToolTarget::FileRegion { path, offset }) => {
+            run_tool(fs, &ext4_args(job, Some(offset), Some(job.bytes / 1024), path))
         }
         (Fs::Ntfs, ToolTarget::Node(node)) => run_tool(Fs::Ntfs, &ntfs_args(job, node, false)),
         (Fs::Ntfs, ToolTarget::FileRegion { path, offset }) => {
@@ -498,5 +500,15 @@ mod tests {
         assert_eq!(a.last().unwrap(), "102400k");
         let n = ntfs_args(&job, Path::new("/tmp/n.img"), true);
         assert!(n.windows(2).any(|w| w == ["-p", "2048"]));
+    }
+
+    #[test]
+    fn ext2_and_ext3_are_known_filesystems() {
+        assert_eq!("ext2".parse::<Fs>().unwrap(), Fs::Ext2);
+        assert_eq!("EXT3".parse::<Fs>().unwrap(), Fs::Ext3);
+        assert!(Fs::Ext2.is_ext() && Fs::Ext3.is_ext() && Fs::Ext4.is_ext() && !Fs::Ntfs.is_ext());
+        assert!(needs_tool(Fs::Ext2) && needs_tool(Fs::Ext3));
+        assert!(validate_label(Fs::Ext3, &"x".repeat(17)).is_err());
+        assert!(validate_cluster(Fs::Ext2, 4096).is_ok());
     }
 }

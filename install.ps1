@@ -1,6 +1,7 @@
 # NyForge installer for Windows.
 #
-#   .\install.ps1                  install for the current user (no administrator needed to install)
+#   install.cmd (double-click)    install for the current user, no administrator needed (starts this script safely)
+#   .\install.ps1                  the same, if PowerShell allows unsigned scripts
 #   .\install.ps1 -Uninstall       remove it again
 #   .\install.ps1 -Dir C:\Tools\NyForge
 #

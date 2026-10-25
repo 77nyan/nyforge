@@ -44,7 +44,7 @@ enum Stage {
     Done,
 }
 
-const ALL_FS: [Fs; 5] = [Fs::Fat32, Fs::ExFat, Fs::Ntfs, Fs::Ext4, Fs::Fat16];
+const ALL_FS: [Fs; 7] = [Fs::Fat32, Fs::ExFat, Fs::Ntfs, Fs::Ext4, Fs::Ext3, Fs::Ext2, Fs::Fat16];
 
 pub struct FormatScreen {
     sel: DriveSelector,
@@ -57,6 +57,7 @@ pub struct FormatScreen {
     wipe: WipeChoice,
     cap: CapChoice,
     fit_real: bool,
+    passes: u8,
     advanced: bool,
     gate: Option<Gate<()>>,
     notice: Option<String>,
@@ -81,6 +82,7 @@ impl FormatScreen {
             wipe: WipeChoice::Quick,
             cap: CapChoice::Off,
             fit_real: false,
+            passes: 1,
             advanced: false,
             gate: None,
             notice: None,
@@ -125,6 +127,8 @@ impl FormatScreen {
             Fs::ExFat => "Works on Windows, macOS and current Linux, with no 4 GB file limit. Some older TVs, cameras and consoles cannot read it.",
             Fs::Ntfs => "Native on Windows. macOS can read NTFS but not write to it without extra software. Not read by most TVs and cameras.",
             Fs::Ext4 => "For Linux. Windows and macOS cannot read ext4 without extra software.",
+            Fs::Ext3 => "Older Linux format with a journal. Windows and macOS cannot read it without extra software.",
+            Fs::Ext2 => "Oldest Linux format, no journal (gentle on flash memory). Windows and macOS cannot read it without extra software.",
             Fs::Fat16 => "Old and widely readable, but limited to 2 GB. Only useful for small drives or old devices.",
         }
     }
@@ -133,12 +137,12 @@ impl FormatScreen {
         match fs {
             Fs::Fat32 | Fs::Fat16 | Fs::Ntfs => vec![512, 1024, 2048, 4096, 8192, 16384, 32768, 65536],
             Fs::ExFat => vec![4096, 8192, 16384, 32768, 65536, 131072, 262144, 524288, 1 << 20],
-            Fs::Ext4 => vec![1024, 2048, 4096],
+            Fs::Ext2 | Fs::Ext3 | Fs::Ext4 => vec![1024, 2048, 4096],
         }
     }
 
     fn cluster_name(fs: Fs) -> &'static str {
-        if fs == Fs::Ext4 {
+        if fs.is_ext() {
             "Block size"
         } else {
             "Allocation unit size"
@@ -198,6 +202,9 @@ impl FormatScreen {
             CapChoice::Quick => a.extend(["--test-capacity".into(), "quick".into()]),
             CapChoice::Full => {
                 a.extend(["--test-capacity".into(), "full".into()]);
+                if self.passes > 1 {
+                    a.extend(["--passes".into(), self.passes.to_string()]);
+                }
                 if self.fit_real {
                     a.push("--fit-real-capacity".into());
                 }
@@ -300,7 +307,7 @@ impl FormatScreen {
                     let max = match self.fs {
                         Fs::Fat32 | Fs::Fat16 | Fs::ExFat => 11,
                         Fs::Ntfs => 32,
-                        Fs::Ext4 => 16,
+                        Fs::Ext2 | Fs::Ext3 | Fs::Ext4 => 16,
                     };
                     ui.add(egui::TextEdit::singleline(&mut self.label).desired_width(200.0).margin(egui::Margin::symmetric(8, 7)).hint_text(RichText::new("optional").color(DIM)).char_limit(max));
                 });
@@ -320,6 +327,37 @@ impl FormatScreen {
                 ui.label(RichText::new(e.message).size(12.0).color(DANGER));
             } else if matches!(self.fs, Fs::Fat32 | Fs::Fat16) && self.label != self.label.to_uppercase() {
                 ui.label(small_muted("FAT labels are stored in capital letters."));
+            }
+            ui.add_space(8.0);
+            let mut quick = self.wipe == WipeChoice::Quick;
+            if ui.checkbox(&mut quick, "Quick format").on_hover_text("Clears the old partition tables and starts fresh in seconds. Untick to overwrite every byte with zeros (slow).").changed() {
+                self.wipe = if quick { WipeChoice::Quick } else { WipeChoice::Zero };
+            }
+            ui.horizontal(|ui| {
+                let mut bad = self.cap == CapChoice::Full;
+                if ui.checkbox(&mut bad, "Check device for bad blocks").on_hover_text("Writes test data over the whole drive and reads it back. Finds worn-out flash and fake capacity. Slow.").changed() {
+                    self.cap = if bad { CapChoice::Full } else { CapChoice::Off };
+                }
+                if bad {
+                    ui.add_space(8.0);
+                    egui::ComboBox::from_id_salt("passes").selected_text(if self.passes == 1 { "1 pass".to_string() } else { format!("{} passes", self.passes) }).width(110.0).show_ui(ui, |ui| {
+                        for n in 1..=4u8 {
+                            ui.selectable_value(&mut self.passes, n, if n == 1 { "1 pass".to_string() } else { format!("{n} passes") });
+                        }
+                    });
+                }
+            });
+            ui.add_space(6.0);
+            if widgets::link_button(ui, "Restore full capacity (fix a drive stuck at a few MB after flashing an ISO)", sel.is_some()).clicked() {
+                if let Some(c) = &sel {
+                    self.fs = fsmake_auto(c.drive.size);
+                    self.fs_touched = false;
+                    self.label.clear();
+                    self.cluster = None;
+                    self.scheme = SchemeChoice::Auto;
+                    self.wipe = WipeChoice::Quick;
+                    self.cap = CapChoice::Off;
+                }
             }
             ui.add_space(6.0);
             let arrow = if self.advanced { "Hide advanced options" } else { "Advanced options" };
@@ -388,7 +426,7 @@ impl FormatScreen {
             let cname = |c: CapChoice| match c {
                 CapChoice::Off => "Off",
                 CapChoice::Quick => "Quick: sample the drive for fake capacity",
-                CapChoice::Full => "Full: write and read back the whole drive (very slow)",
+                CapChoice::Full => "Full: write and read back the whole drive, finds bad blocks (very slow)",
             };
             egui::ComboBox::from_id_salt("cap").selected_text(cname(self.cap)).width(300.0).show_ui(ui, |ui| {
                 for c in [CapChoice::Off, CapChoice::Quick, CapChoice::Full] {
@@ -557,12 +595,18 @@ impl FormatScreen {
     }
 }
 
+fn fsmake_auto(bytes: u64) -> Fs {
+    nyforge_core::usbformat::auto_fs(bytes)
+}
+
 fn fs_arg(fs: Fs) -> &'static str {
     match fs {
         Fs::Fat16 => "fat16",
         Fs::Fat32 => "fat32",
         Fs::ExFat => "exfat",
         Fs::Ntfs => "ntfs",
+        Fs::Ext2 => "ext2",
+        Fs::Ext3 => "ext3",
         Fs::Ext4 => "ext4",
     }
 }

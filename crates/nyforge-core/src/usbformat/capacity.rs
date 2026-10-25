@@ -161,6 +161,21 @@ impl CapacityReport {
             CapacityTest::Full => "Every block was written and read back.",
             _ => "Spot check of the whole drive.",
         };
+        // A few scattered failures are worn-out flash (bad blocks), not a fake: a fake loses everything past a point.
+        let blocks = self.tested_bytes.div_ceil(MIB).max(1);
+        if self.mode == CapacityTest::Full && self.bad_blocks * 100 < blocks {
+            return NyError::new(
+                ErrorKind::FakeCapacity,
+                format!(
+                    "Found {} bad block{} out of {} (the first near {} into the drive).",
+                    self.bad_blocks,
+                    if self.bad_blocks == 1 { "" } else { "s" },
+                    blocks,
+                    human_size(self.first_bad.unwrap_or(0)),
+                ),
+            )
+            .with_hint("The flash memory is wearing out. Do not keep important files on this drive. To format it anyway, run the format without --check-bad-blocks.");
+        }
         NyError::new(
             ErrorKind::FakeCapacity,
             format!(

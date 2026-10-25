@@ -16,7 +16,7 @@
 |---|---|---|
 | **NyFlash** | Writes `.iso` / `.img` files (and `.gz` `.xz` `.bz2` `.zst` `.zip` archives of them) to a USB drive. | `nyforge flash` |
 | **NyBoot** | Multiboot drive: install once, copy ISOs onto it like files, pick one at boot. Not Ventoy-compatible. | `nyforge boot` |
-| **NyFormat** | Erases and formats USB sticks and SD cards (FAT32, exFAT, FAT16, ext4, NTFS where the system allows). | `nyforge format` |
+| **NyFormat** | Erases and formats USB sticks and SD cards (FAT32, exFAT, FAT16, NTFS, ext2/3/4 where the system allows), checks for bad blocks and fake capacity, restores a drive stuck at a few MB. | `nyforge format` |
 
 A desktop app (`nyforge-gui`) and a command line (`nyforge`) share one engine; the app never touches a drive itself.
 Keys: **Ctrl+1/2/3** (**Cmd** on macOS) open the tools, **Alt+Left** (**Cmd+[**) goes back, **F11** full screen.
@@ -56,10 +56,11 @@ Check with `nyforge --version`; remove with `./install.sh --user --uninstall` (o
 
 ### Windows
 
-Download the `.zip` from **Releases**, extract it, right-click `install.ps1` > **Run with PowerShell** (if blocked:
-`powershell -ExecutionPolicy Bypass -File .\install.ps1`), then open **NyForge** from the Start menu. Writing to a
-drive needs administrator rights; the app offers **Restart as administrator** (UAC prompt). The program is not
-code-signed yet, so SmartScreen may warn: **More info > Run anyway**. Remove with `.\install.ps1 -Uninstall`.
+Download the `.zip` from **Releases**, extract it, then **double-click `install.cmd`**, and open **NyForge** from the Start
+menu. (Windows blocks the unsigned `install.ps1` itself with "is not digitally signed"; `install.cmd` starts it safely.
+Remove NyForge with `install.cmd -Uninstall` in a terminal.) Writing to a drive needs administrator rights; the app
+offers **Restart as administrator** (UAC prompt). The program is not code-signed yet, so SmartScreen may warn:
+**More info > Run anyway**.
 
 ### Downloads (Releases page)
 
@@ -114,7 +115,9 @@ and `nyforge-gui` in the same folder: the app finds the engine next to itself.
   * **Start-up:** Arch-family images (Arch, CachyOS, EndeavourOS...) are started by NyBoot itself, because their own
     menu searches every partition of every disk first and is slow. For an image's own menu put `<image>.iso.nyboot.cfg`
     next to it with `set nb_profile="loopbackcfg"`; the same file can add options, e.g. `set nb_params="nomodeset"`.
-* **NyFormat**: choose a drive, a filesystem (only ones this system can make), a label, **Format...**.
+* **NyFormat**: choose a drive, a filesystem (only ones this system can make), a label and cluster size, then
+  **Format!**. Options: **Quick format**, **Check device for bad blocks** (1 to 4 passes), and **Restore full capacity**
+  for a drive that shows only a few MB after flashing an ISO. A cancelled flash leaves such a drive; this fixes it.
 * Closing the window during a write asks first, then stops it. Progress and errors are the engine's own; nothing is
   simulated. There is no "verified" claim, because writes are not read back. Animations follow "reduce motion".
 
@@ -136,6 +139,7 @@ sudo nyforge boot add /dev/sdb *.iso
 nyforge boot check some.iso
 sudo nyforge format /dev/sdb --fs exfat -l HOLIDAY
 sudo nyforge format /dev/sdb --scheme gpt --partition fat32:16G:WIN --partition ext4::LINUX
+sudo nyforge format /dev/sdb --check-bad-blocks --passes 2         # write and read back the whole drive twice (finds bad blocks and fakes)
 sudo nyforge format /dev/sdb --test-capacity full --wipe zero      # unmask fake capacity, then erase
 nyforge format --list                          # what could be formatted (never internal disks)
 nyforge clone /dev/sdb backup.img.zst
@@ -199,7 +203,7 @@ run NyForge there first, you are the first tester: use a spare stick.
   place; reinstalling erases the drive.
 * MBR only for NyBoot; drives up to 2 TiB with 512-byte sectors. `install.esd` over 4 GiB is not supported.
 * Writes are not read back to verify (only the format capacity test reads back).
-* `nyforge format` makes FAT16/FAT32/exFAT itself on every system. ext4 and NTFS need Linux with `mkfs.ext4` /
+* `nyforge format` makes FAT16/FAT32/exFAT itself on every system. ext2/ext3/ext4 and NTFS need Linux with `mkfs.ext4` /
   `mkfs.ntfs` (`nyforge doctor` checks); on Windows NTFS is made by Windows (needs a partition table); macOS can make
   neither. 512-byte-sector drives only; drives over 2 TB default to GPT, which cannot be combined with
   `--fit-real-capacity`.

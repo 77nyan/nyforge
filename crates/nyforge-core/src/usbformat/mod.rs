@@ -47,6 +47,8 @@ pub enum Fs {
     #[serde(rename = "exfat")]
     ExFat,
     Ntfs,
+    Ext2,
+    Ext3,
     Ext4,
 }
 
@@ -57,8 +59,15 @@ impl Fs {
             Fs::Fat32 => "FAT32",
             Fs::ExFat => "exFAT",
             Fs::Ntfs => "NTFS",
+            Fs::Ext2 => "ext2",
+            Fs::Ext3 => "ext3",
             Fs::Ext4 => "ext4",
         }
+    }
+
+    /// ext2, ext3 and ext4: made by the same system tool, and owned by a Linux user rather than "everyone".
+    pub fn is_ext(self) -> bool {
+        matches!(self, Fs::Ext2 | Fs::Ext3 | Fs::Ext4)
     }
 
     pub fn min_bytes(self) -> u64 {
@@ -66,7 +75,7 @@ impl Fs {
             Fs::Fat16 => 8 * MIB,
             Fs::Fat32 => 33 * MIB,
             Fs::ExFat => 8 * MIB,
-            Fs::Ntfs | Fs::Ext4 => 16 * MIB,
+            Fs::Ntfs | Fs::Ext2 | Fs::Ext3 | Fs::Ext4 => 16 * MIB,
         }
     }
 
@@ -84,13 +93,13 @@ impl Fs {
             Fs::Fat16 => 0x0E,
             Fs::Fat32 => 0x0C,
             Fs::ExFat | Fs::Ntfs => 0x07,
-            Fs::Ext4 => 0x83,
+            Fs::Ext2 | Fs::Ext3 | Fs::Ext4 => 0x83,
         }
     }
 
     pub fn gpt_type(self) -> tables::Guid {
         match self {
-            Fs::Ext4 => tables::type_linux(),
+            Fs::Ext2 | Fs::Ext3 | Fs::Ext4 => tables::type_linux(),
             _ => tables::type_basic_data(),
         }
     }
@@ -105,7 +114,9 @@ impl FromStr for Fs {
             "exfat" => Ok(Fs::ExFat),
             "ntfs" => Ok(Fs::Ntfs),
             "ext4" | "ext" => Ok(Fs::Ext4),
-            other => Err(format!("\"{other}\" is not a filesystem NyForge can make (fat16, fat32, exfat, ntfs, ext4).")),
+            "ext3" => Ok(Fs::Ext3),
+            "ext2" => Ok(Fs::Ext2),
+            other => Err(format!("\"{other}\" is not a filesystem NyForge can make (fat16, fat32, exfat, ntfs, ext2, ext3, ext4).")),
         }
     }
 }
@@ -228,6 +239,8 @@ pub struct FormatOptions {
     pub capacity_test: CapacityTest,
     /// After a failed full capacity test, format only the part of the drive that works.
     pub fit_real_capacity: bool,
+    /// How many times the full test writes and reads the drive (1 to 4). Each pass uses new data, like a bad-blocks check.
+    pub passes: u8,
     /// Leave this much unpartitioned at the end.
     pub reserve_bytes: u64,
     /// Required when the target is an image file.
@@ -245,6 +258,7 @@ impl Default for FormatOptions {
             wipe: Wipe::Quick,
             capacity_test: CapacityTest::Off,
             fit_real_capacity: false,
+            passes: 1,
             reserve_bytes: 0,
             file_size: None,
             unmount: true,
@@ -609,17 +623,34 @@ fn format_impl(target: &Target, opts: &FormatOptions, cancel: Arc<AtomicBool>, e
             rep.phase(Phase::Writing, "Testing the drive's real capacity");
             rep.restart();
             let mut stage_seen = String::new();
-            let r = {
-                let rep_ref = &mut rep;
-                capacity::run(&whole, opts.capacity_test, prng::random_seed(), &cancel, &mut |stage, done, total| {
-                    if stage != stage_seen {
-                        stage_seen = stage.to_string();
-                        rep_ref.restart();
-                        rep_ref.log(if stage == "write" { "Writing test data over the drive…" } else { "Reading it back…" });
-                    }
-                    rep_ref.progress(done, total);
-                })?
-            };
+            let passes = if opts.capacity_test == CapacityTest::Full { opts.passes.clamp(1, 4) } else { 1 };
+            let mut worst: Option<CapacityReport> = None;
+            for pass in 1..=passes {
+                if passes > 1 {
+                    rep.log(format!("Pass {pass} of {passes}…"));
+                }
+                let r = {
+                    let rep_ref = &mut rep;
+                    capacity::run(&whole, opts.capacity_test, prng::random_seed(), &cancel, &mut |stage, done, total| {
+                        if stage != stage_seen {
+                            stage_seen = stage.to_string();
+                            rep_ref.restart();
+                            rep_ref.log(if stage == "write" { "Writing test data over the drive…" } else { "Reading it back…" });
+                        }
+                        rep_ref.progress(done, total);
+                    })?
+                };
+                stage_seen.clear();
+                let bad_now = r.bad_blocks;
+                let keep = match &worst {
+                    None => true,
+                    Some(w) => bad_now > w.bad_blocks,
+                };
+                if keep {
+                    worst = Some(r);
+                }
+            }
+            let r = worst.expect("at least one pass");
             if !r.genuine {
                 if opts.fit_real_capacity {
                     let real = r.estimated_real & !(MIB - 1);
@@ -760,11 +791,11 @@ fn format_impl(target: &Target, opts: &FormatOptions, cancel: Arc<AtomicBool>, e
             }
         }
         if let Some((u, g)) = opts.owner {
-            if plan.iter().any(|p| p.spec.fs == Fs::Ext4) {
-                notes.push(format!("The ext4 volume's top folder belongs to user {u}:{g}, so that user can write to it without root."));
+            if plan.iter().any(|p| p.spec.fs.is_ext()) {
+                notes.push(format!("The ext volume's top folder belongs to user {u}:{g}, so that user can write to it without root."));
             }
-        } else if plan.iter().any(|p| p.spec.fs == Fs::Ext4) {
-            notes.push("The ext4 volume's top folder belongs to root: use sudo or chown it once to write to it as a normal user.".into());
+        } else if plan.iter().any(|p| p.spec.fs.is_ext()) {
+            notes.push("The ext volume's top folder belongs to root: use sudo or chown it once to write to it as a normal user.".into());
         }
     }
     if target.kind == TargetKind::BlockDevice {

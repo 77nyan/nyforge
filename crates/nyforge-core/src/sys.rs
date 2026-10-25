@@ -366,6 +366,10 @@ mod imp {
                     .with_hint("Close programs using the drive, or allow NyForge to dismount it."));
             }
             let letter = mp.trim_end_matches('\\').trim_end_matches(':');
+            // Never hand Windows anything but a plain drive letter (a bad name here once stopped every write).
+            if letter.len() != 1 || !letter.chars().all(|c| c.is_ascii_alphabetic()) {
+                continue;
+            }
             let vol_path = format!("\\\\.\\{letter}:");
             let f = OpenOptions::new()
                 .read(true)
