@@ -432,6 +432,18 @@ mod tests {
         assert!(open.contains("key_mgmt=NONE"));
     }
 
+    /// These tests need external tools that only Linux machines have. On Linux a missing tool is an error (CI installs
+    /// them); on macOS and Windows the test is skipped, because those systems cannot run it at all.
+    fn skip_without(tools: &[&str]) -> bool {
+        let missing: Vec<&&str> = tools.iter().filter(|t| !have(t)).collect();
+        if missing.is_empty() {
+            return false;
+        }
+        assert!(!cfg!(target_os = "linux"), "{missing:?} required for this test");
+        eprintln!("skipped: {missing:?} not available on this system");
+        true
+    }
+
     /// A Pi-like image: partition table by `parted`, FAT32 boot partition by mtools, plus a dummy root partition.
     fn pi_image(name: &str, label: &str, files: &[&str], gpt: bool) -> std::path::PathBuf {
         for t in ["parted", "mformat", "mcopy", "mtype"] {
@@ -478,6 +490,9 @@ mod tests {
     #[test]
     fn writes_cloud_init_into_a_trixie_style_image_mbr_and_gpt() {
         for (name, gpt) in [("ci-mbr", false), ("ci-gpt", true)] {
+            if skip_without(&["parted", "mformat", "mcopy", "mtype"]) {
+                return;
+            }
             let img = pi_image(name, "BOOTFS", &["config.txt", "cmdline.txt", "user-data", "network-config", "meta-data"], gpt);
             let rep = apply(&Target::file(&img), &full(), None).unwrap();
             assert_eq!(rep.style, Style::CloudInit);
@@ -495,6 +510,9 @@ mod tests {
 
     #[test]
     fn writes_legacy_marker_files_for_older_images() {
+        if skip_without(&["parted", "mformat", "mcopy", "mtype"]) {
+            return;
+        }
         let img = pi_image("legacy", "BOOTFS", &["config.txt", "cmdline.txt"], false);
         let rep = apply(&Target::file(&img), &full(), None).unwrap();
         assert_eq!(rep.style, Style::Legacy);
@@ -508,6 +526,9 @@ mod tests {
 
     #[test]
     fn refuses_drives_that_are_not_pi_images() {
+        if skip_without(&["parted", "mformat", "mcopy", "mtype"]) {
+            return;
+        }
         let img = pi_image("other", "DATA", &["readme.txt"], false);
         let e = apply(&Target::file(&img), &full(), None).err().unwrap();
         assert_eq!(e.kind, ErrorKind::ImageUnsupported);

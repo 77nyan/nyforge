@@ -116,6 +116,18 @@ mod tests {
         Command::new("sh").args(["-c", &format!("command -v {c} >/dev/null")]).status().map(|s| s.success()).unwrap_or(false)
     }
 
+    /// These tests need external tools that only Linux machines have. On Linux a missing tool is an error (CI installs
+    /// them); on macOS and Windows the test is skipped, because those systems cannot run it at all.
+    fn skip_without(tools: &[&str]) -> bool {
+        let missing: Vec<&&str> = tools.iter().filter(|t| !have(t)).collect();
+        if missing.is_empty() {
+            return false;
+        }
+        assert!(!cfg!(target_os = "linux"), "{missing:?} required for this test");
+        eprintln!("skipped: {missing:?} not available on this system");
+        true
+    }
+
     /// Partition tables are made by `parted`, an independent implementation.
     fn parted_image(name: &str, label: &str) -> std::path::PathBuf {
         assert!(have("parted"), "parted is required for this test");
@@ -141,6 +153,9 @@ mod tests {
 
     #[test]
     fn reads_mbr_tables() {
+        if skip_without(&["parted"]) {
+            return;
+        }
         let p = parted_image("mbr", "msdos");
         let t = read_table(&open(&p)).unwrap();
         assert_eq!(t.len(), 2);
@@ -151,6 +166,9 @@ mod tests {
 
     #[test]
     fn reads_gpt_tables() {
+        if skip_without(&["parted"]) {
+            return;
+        }
         let p = parted_image("gpt", "gpt");
         let t = read_table(&open(&p)).unwrap();
         assert_eq!(t.len(), 2, "{t:?}");
