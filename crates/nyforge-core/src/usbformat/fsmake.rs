@@ -223,7 +223,9 @@ pub fn check_tool(fs: Fs) -> Result<()> {
         return Err(NyError::new(ErrorKind::Unavailable, format!("{} cannot be made on {os}.", fs.name()))
             .with_hint(format!("NyForge formats FAT16, FAT32 and exFAT itself on every platform; {which}.")));
     }
-    if tool_candidates(fs).iter().any(|(n, _)| on_path(n).is_some()) {
+    // Test hook (screenshots of the "greyed out" help): pretend the system programs are not installed.
+    let hidden = std::env::var_os("NYFORGE_TEST_NO_MKFS").is_some();
+    if !hidden && tool_candidates(fs).iter().any(|(n, _)| on_path(n).is_some()) {
         return Ok(());
     }
     Err(NyError::new(ErrorKind::Unavailable, format!("Formatting {} needs the system's {} program, which is not installed.", fs.name(), tool_candidates(fs)[0].0))

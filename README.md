@@ -114,7 +114,7 @@ root. Manual build: `cargo build --release -p nyforge -p nyforge-gui`; keep both
     image's own menu put `<image>.iso.nyboot.cfg` next to it with `set nb_profile="loopbackcfg"`; the same file can add
     options, e.g. `set nb_params="nomodeset"`.
 * **NyFormat**: choose a drive, a filesystem (only ones this system can make), a label and cluster size, then
-  **Format!**. Options: **Quick format**, **Check device for bad blocks** (1 to 4 passes), and **Restore full capacity**
+  **Format!**. A greyed-out filesystem has an **i** button that explains why and how to fix it on your system. Options: **Quick format**, **Check device for bad blocks** (1 to 4 passes), and **Restore full capacity**
   for a drive that shows only a few MB after flashing an ISO. A cancelled flash leaves such a drive; this fixes it.
 * Closing the window during a write asks first, then stops it. Progress and errors are the engine's own; nothing is
   simulated. There is no "verified" claim, because writes are not read back. Animations follow "reduce motion".

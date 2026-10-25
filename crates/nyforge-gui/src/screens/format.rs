@@ -57,6 +57,7 @@ pub struct FormatScreen {
     wipe: WipeChoice,
     cap: CapChoice,
     fit_real: bool,
+    fs_help: Option<(Fs, crate::fshelp::Reason)>,
     passes: u8,
     advanced: bool,
     gate: Option<Gate<()>>,
@@ -82,6 +83,7 @@ impl FormatScreen {
             wipe: WipeChoice::Quick,
             cap: CapChoice::Off,
             fit_real: false,
+            fs_help: None,
             passes: 1,
             advanced: false,
             gate: None,
@@ -296,6 +298,15 @@ impl FormatScreen {
                         self.fs = fs;
                         self.fs_touched = true;
                         self.cluster = None;
+                    }
+                    if problem.is_some() {
+                        let name = fs.name();
+                        if widgets::info_button(ui, &format!("Why is {name} greyed out?")).clicked() {
+                            let tool_problem = fsmake::check_tool(fs).is_err();
+                            if let Some(r) = crate::fshelp::reason_for(fs, size, crate::fshelp::Os::current(), tool_problem) {
+                                self.fs_help = Some((fs, r));
+                            }
+                        }
                     }
                 }
             });
@@ -523,6 +534,42 @@ impl FormatScreen {
                 if let Some(c) = self.sel.selected() {
                     self.fs = usbformat::auto_fs(c.drive.size);
                 }
+            }
+        }
+        if let Some((fs, reason)) = self.fs_help {
+            let size = self.sel.selected().map(|c| c.drive.size).unwrap_or(0);
+            let h = crate::fshelp::help(fs, reason, size, crate::fshelp::Os::current());
+            let (_, close) = dialog(ctx, "fs-help", 520.0, |ui| {
+                ui.label(heading(&h.title));
+                ui.add_space(8.0);
+                ui.label(RichText::new(&h.why).color(TEXT));
+                if !h.commands.is_empty() {
+                    ui.add_space(8.0);
+                    ui.label(small_muted("Install it with:"));
+                    for c in &h.commands {
+                        ui.label(RichText::new(c).monospace().size(12.5).color(TEXT));
+                    }
+                }
+                if !h.systems.is_empty() {
+                    ui.add_space(10.0);
+                    ui.label(small_muted(format!("{} on each system", fs.name())));
+                    for (os, text) in &h.systems {
+                        let this = if *os == crate::fshelp::Os::current() { "  (this computer)" } else { "" };
+                        ui.label(RichText::new(format!("{}{}: {}", os.name(), this, text)).size(13.0).color(if this.is_empty() { MUTED } else { TEXT }));
+                    }
+                }
+                if !h.after.is_empty() {
+                    ui.add_space(10.0);
+                    ui.label(muted(&h.after));
+                }
+                dialog_buttons(ui, |ui| {
+                    if Btn::new("Close").show(ui).clicked() {
+                        self.fs_help = None;
+                    }
+                });
+            });
+            if close {
+                self.fs_help = None;
             }
         }
         let (mut accept, mut cancel) = (false, false);

@@ -177,6 +177,20 @@ pub fn link_button(ui: &mut Ui, text: &str, enabled: bool) -> Response {
 }
 
 /// A square icon-only button with a tooltip (which is also its accessible label).
+/// A small round "i" for "tell me why". Always clickable.
+pub fn info_button(ui: &mut Ui, label: &str) -> Response {
+    let (rect, resp) = ui.allocate_exact_size(vec2(24.0, 24.0), Sense::click());
+    resp.widget_info(|| WidgetInfo::labeled(WidgetType::Button, true, label));
+    let hover = hover_t(ui.ctx(), resp.id.with("h"), resp.hovered() || resp.has_focus());
+    let p = ui.painter();
+    p.rect(rect, CornerRadius::same(12), with_alpha(PANEL_HI, (hover * 255.0) as u8), Stroke::new(1.5_f32, mix(BORDER_HI, ACCENT_HI, hover)), StrokeKind::Inside);
+    icons::paint(p, Icon::Info, Rect::from_center_size(rect.center(), vec2(14.0, 14.0)), mix(MUTED, ACCENT_HI, hover));
+    if resp.has_focus() {
+        focus_ring_r(p, rect, 12.0);
+    }
+    resp.on_hover_cursor(egui::CursorIcon::PointingHand).on_hover_text(label)
+}
+
 pub fn icon_button(ui: &mut Ui, icon: Icon, label: &str, enabled: bool) -> Response {
     let sense = if enabled { Sense::click() } else { Sense::hover() };
     let (rect, resp) = ui.allocate_exact_size(vec2(32.0, 32.0), sense);
