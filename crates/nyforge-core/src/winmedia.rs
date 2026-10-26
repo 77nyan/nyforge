@@ -269,10 +269,17 @@ impl<W: Write> Write for ProgressWriter<'_, '_, W> {
 }
 
 
+/// Split `install.wim` only when it cannot be one FAT32 file (4 GiB minus one byte), or when the caller asked for
+/// smaller parts than the default. A file that fits is copied whole: compact (solid) images, which many custom builds
+/// such as Tiny11 use, cannot be split at all, and the default part size is below the real FAT32 limit.
+fn needs_split(exceeds_fat32: bool, part_bytes: u64, install_bytes: u64) -> bool {
+    exceeds_fat32 || (part_bytes < FAT32_PART_BYTES && part_bytes < install_bytes)
+}
+
 /// Decide what happens to `install.wim`: copied as it is, or split into parts that fit a FAT32 file.
 fn decide_plan(iso: &IsoImage, win: &probe::WindowsInfo, opts: &WindowsOptions, notes: &mut Vec<String>) -> Result<Plan> {
     Ok(match win.install_image.as_deref() {
-        Some("install.wim") if win.exceeds_fat32 || opts.part_bytes < win.install_bytes => {
+        Some("install.wim") if needs_split(win.exceeds_fat32, opts.part_bytes, win.install_bytes) => {
             let e = iso.find("sources/install.wim")?.unwrap();
             let sp = SplitPlan::new(&IsoFile { iso, entry: &e }, opts.part_bytes.min(FAT32_PART_BYTES))?;
             notes.push(format!("install.wim ({}) was split into {} parts for FAT32.", human_size(win.install_bytes), sp.part_count()));
@@ -829,6 +836,19 @@ mod tests {
     fn extract_partition(img: &Path, out: &Path) {
         let st = Command::new("dd").arg(format!("if={}", img.display())).arg(format!("of={}", out.display())).args(["bs=1M", "skip=1", "status=none"]).status().unwrap();
         assert!(st.success());
+    }
+
+    #[test]
+    fn an_install_wim_that_fits_fat32_is_copied_whole_and_only_a_bigger_one_is_split() {
+        let gib = 1u64 << 30;
+        // 3.9 GiB: above the default part size, below FAT32's limit (a Tiny11 ISO): copied whole.
+        assert!(!needs_split(false, FAT32_PART_BYTES, 39 * gib / 10));
+        assert!(!needs_split(false, FAT32_PART_BYTES, 2 * gib));
+        // Over 4 GiB: split.
+        assert!(needs_split(true, FAT32_PART_BYTES, 5 * gib));
+        // A caller who asks for small parts (the tests do) still gets them.
+        assert!(needs_split(false, 2_400_000, 6_000_000));
+        assert!(!needs_split(false, 2_400_000, 1_000_000));
     }
 
     #[test]
