@@ -106,6 +106,7 @@ root. Manual build: `cargo build --release -p nyforge -p nyforge-gui`; keep both
     Options: skip the Windows 11 hardware checks, legacy BIOS on/off. "Write the ISO as it is" is still there.
     This mode is mainly meant for modified Windows builds such as Tiny10 and Tiny11. For an official Windows install,
     use Microsoft's own Media Creation Tool; it is the supported way and gets you the newest version.
+    Windows ISOs (custom ones too) do **not** work with NyBoot: a Windows installer cannot be started from a multiboot drive.
     A build that brings its own `autounattend.xml` keeps it. An `install.esd` over 4 GB cannot go on a FAT32 drive
     (it cannot be split); the app says so before you start.
   * **Windows writes** go in 1 MiB pieces, and if the stick drops out for a moment and comes back as the very same
