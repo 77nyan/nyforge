@@ -104,7 +104,7 @@ impl Ui {
                 eprintln!("{} {} ({}{}) → {}", self.bold("Writing"), image, container, size, targets.join(", "));
             }
             Event::Phase { phase, detail } => {
-                if matches!(phase, Phase::Preparing | Phase::Finalizing) {
+                if matches!(phase, Phase::Preparing | Phase::Finalizing | Phase::Verifying) {
                     self.finish_line();
                     eprintln!("{}", self.dim(detail));
                 }
@@ -133,7 +133,7 @@ impl Ui {
                     eprintln!("{} {}: {}", self.red("✘"), target, e.message);
                 }
             }
-            Event::Finished { .. } | Event::Error { .. } => {}
+            Event::Finished { .. } | Event::Verified { .. } | Event::Error { .. } => {}
         }
     }
 }

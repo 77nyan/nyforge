@@ -192,6 +192,20 @@ impl SplitPlan {
         Ok(SplitPlan { header: h, metadata, streams, xml, boot_meta_index, parts, guid })
     }
 
+    /// Use this GUID instead of a fresh random one, to rebuild parts byte for byte as an earlier run wrote them.
+    pub fn with_guid(mut self, guid: [u8; 16]) -> Self {
+        self.guid = guid;
+        self
+    }
+
+    /// The GUID that ties the parts of one split image together, read from the first bytes of any part.
+    pub fn guid_of_part(header: &[u8]) -> Option<[u8; 16]> {
+        if header.len() < HEADER_LEN || &header[0..8] != MAGIC {
+            return None;
+        }
+        header[24..40].try_into().ok()
+    }
+
     pub fn part_count(&self) -> usize {
         self.parts.len()
     }

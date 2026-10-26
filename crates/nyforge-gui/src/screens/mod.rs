@@ -107,6 +107,7 @@ pub fn phase_text(run: &Run) -> String {
         Some((Phase::Preparing, d)) => format!("{}…", d.trim_end_matches('…')),
         Some((Phase::Writing, d)) => format!("{}…", d.trim_end_matches('…')),
         Some((Phase::Finalizing, d)) => format!("{}…", d.trim_end_matches('…')),
+        Some((Phase::Verifying, d)) => format!("{}…", d.trim_end_matches('…')),
         None => "Starting…".into(),
     }
 }
@@ -147,7 +148,7 @@ fn run_panel_inner(ui: &mut Ui, id: Id, run: &Run, stopping: bool, rows: &[(&str
                 let elapsed = run.started.elapsed().as_secs_f64();
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     // Only once there is enough data for the numbers to mean something.
-                    if elapsed > 3.0 {
+                    if elapsed > 3.0 && run.verify_started.map_or(true, |t| t.elapsed().as_secs_f64() > 3.0) {
                         if let Some(speed) = run.smooth.speed() {
                             if let Some(eta) = run.smooth.eta().filter(|_| p.fraction > 0.02) {
                                 ui.label(small_muted(format!("{} left", fmt_duration(eta))));

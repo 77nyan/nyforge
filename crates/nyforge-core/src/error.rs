@@ -38,6 +38,8 @@ pub enum ErrorKind {
     Unavailable,
     /// The drive holds less data than it claims (counterfeit or failing flash).
     FakeCapacity,
+    /// What was read back from the drive is not what was written.
+    VerifyFailed,
     /// Anything else.
     Other,
 }

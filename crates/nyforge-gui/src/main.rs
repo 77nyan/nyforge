@@ -5,6 +5,7 @@ mod app;
 mod drives;
 mod elevation;
 mod gate;
+mod checkdlg;
 mod fshelp;
 mod icons;
 mod logo;

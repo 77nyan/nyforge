@@ -1,6 +1,7 @@
 //! NyFlash: write an image to a USB drive.
 
 use super::{file_name, permission_notice, pick_files, run_panel, Screen, Shell};
+use crate::checkdlg::ChecksumDialog;
 use crate::drives::{self, Candidate, Purpose};
 use crate::gate::{Gate, GateEvent};
 use crate::icons::Icon;
@@ -27,6 +28,8 @@ struct ImageSel {
     file_size: u64,
     info: ImageInfo,
     windows_installer: bool,
+    /// What the ISO holds, when it is a Windows installer (install image, size, own answer file).
+    win: Option<nyforge_core::nyboot::probe::WindowsInfo>,
 }
 
 impl ImageSel {
@@ -42,6 +45,25 @@ enum Stage {
     Done,
 }
 
+/// What the engine is doing in the current run.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum RunKind {
+    /// Writing an image.
+    Flash,
+    /// Making a Windows installer from a Windows ISO.
+    Windows,
+    /// Only reading a finished drive back and comparing it.
+    VerifyOnly,
+}
+
+/// How the last write was made, so the drive can be read back the same way.
+#[derive(Clone)]
+struct Written {
+    windows: bool,
+    bypass: bool,
+    bios: bool,
+}
+
 pub struct FlashScreen {
     stage: Stage,
     image: Option<ImageSel>,
@@ -54,6 +76,17 @@ pub struct FlashScreen {
     target: Option<Candidate>,
     ask_stop: bool,
     outcome: Option<Outcome>,
+    /// A Windows ISO: write it byte for byte instead of making an installer from it.
+    win_as_is: bool,
+    /// Windows 11: skip the TPM, Secure Boot and RAM checks in Setup.
+    win_bypass: bool,
+    /// Also make the installer start on old BIOS computers.
+    win_bios: bool,
+    /// Read the drive back when the write is done (can be switched on while it runs).
+    verify_after: bool,
+    check: ChecksumDialog,
+    kind: RunKind,
+    written: Option<Written>,
 }
 
 impl FlashScreen {
@@ -70,10 +103,22 @@ impl FlashScreen {
             target: None,
             ask_stop: false,
             outcome: None,
+            win_as_is: false,
+            win_bypass: false,
+            win_bios: true,
+            verify_after: false,
+            check: ChecksumDialog::new(),
+            kind: RunKind::Flash,
+            written: None,
         };
         // Testing aid: preselect an image without the native picker.
         if let Some(p) = std::env::var_os("NYFORGE_GUI_TEST_IMAGE") {
             s.load_image(PathBuf::from(p), &egui::Context::default());
+        }
+        if std::env::var_os("NYFORGE_GUI_TEST_CHECKSUM").is_some() {
+            if let Some(p) = std::env::var_os("NYFORGE_GUI_TEST_IMAGE") {
+                s.check.open(PathBuf::from(p), &egui::Context::default());
+            }
         }
         s
     }
@@ -105,8 +150,10 @@ impl FlashScreen {
                 }
                 let info = image::describe_file(&path).map_err(|e| failure_from(&e))?;
                 let name = file_name(&path);
-                let windows_installer = name.to_ascii_lowercase().ends_with(".iso") && matches!(probe::analyze_file(&path), Ok(r) if r.verdict == Verdict::WindowsInstaller);
-                Ok(ImageSel { name, file_size: meta.len(), info, windows_installer, path })
+                let report = if name.to_ascii_lowercase().ends_with(".iso") { probe::analyze_file(&path).ok().filter(|r| r.verdict == Verdict::WindowsInstaller) } else { None };
+                let windows_installer = report.is_some();
+                let win = report.and_then(|r| r.windows);
+                Ok(ImageSel { name, file_size: meta.len(), info, windows_installer, win, path })
             })();
             let _ = tx.send(r);
             c.request_repaint();
@@ -121,10 +168,31 @@ impl FlashScreen {
         self.notice = None;
     }
 
+    /// Is the chosen image a Windows installer that NyForge will turn into an installer (rather than copy as it is)?
+    fn windows_mode(&self) -> bool {
+        self.image.as_ref().is_some_and(|i| i.windows_installer) && !self.win_as_is
+    }
+
     fn start_flash(&mut self, cand: Candidate, ctx: &egui::Context) {
         let Some(img) = &self.image else { return };
-        let mut args = vec!["flash".to_string(), img.path.to_string_lossy().into_owned(), cand.drive.path.clone(), "-y".to_string()];
+        let win = self.windows_mode();
+        let own_answers = img.win.as_ref().is_some_and(|w| w.own_unattend);
+        let bypass = self.win_bypass && !own_answers;
+        let mut args = vec![if win { "windows" } else { "flash" }.to_string(), img.path.to_string_lossy().into_owned(), cand.drive.path.clone(), "-y".to_string()];
+        if win {
+            if bypass {
+                args.push("--bypass-checks".into());
+            }
+            if !self.win_bios {
+                args.push("--uefi-only".into());
+            }
+        }
+        if self.verify_after {
+            args.push("--verify".into());
+        }
         args.extend(drives::engine_flags(&cand));
+        self.written = Some(Written { windows: win, bypass, bios: self.win_bios });
+        self.kind = if win { RunKind::Windows } else { RunKind::Flash };
         self.run = Some(Run::new(worker::spawn(args, ctx.clone()), true));
         self.target = Some(cand);
         self.stage = Stage::Running;
@@ -133,12 +201,34 @@ impl FlashScreen {
         self.step = None;
     }
 
+    /// Read the drive back and compare it with the image it was written from (no writing).
+    fn start_verify(&mut self, ctx: &egui::Context) {
+        let (Some(img), Some(cand), Some(w)) = (&self.image, &self.target, self.written.clone()) else { return };
+        let mut args = vec!["verify".to_string(), img.path.to_string_lossy().into_owned(), cand.drive.path.clone()];
+        if w.windows {
+            args.push("--windows".into());
+            if w.bypass {
+                args.push("--bypass-checks".into());
+            }
+            if !w.bios {
+                args.push("--uefi-only".into());
+            }
+        }
+        self.run = Some(Run::new(worker::spawn(args, ctx.clone()), false));
+        self.kind = RunKind::VerifyOnly;
+        self.stage = Stage::Running;
+        self.outcome = None;
+        self.ask_stop = false;
+    }
+
     fn reset_for_another(&mut self, ctx: &egui::Context) {
         self.stage = Stage::Setup;
         self.run = None;
         self.target = None;
         self.outcome = None;
         self.step = None;
+        self.written = None;
+        self.kind = RunKind::Flash;
         self.sel.deselect();
         self.sel.refresh(ctx);
     }
@@ -216,6 +306,8 @@ impl FlashScreen {
             Some("Select the drive to write to.".into())
         } else if let Some((need, have)) = too_small {
             Some(format!("The image needs {} but this drive holds {}.", human_size(need), human_size(have)))
+        } else if self.windows_mode() && self.image.as_ref().and_then(|i| i.win.as_ref()).is_some_and(|w| w.exceeds_fat32 && w.install_image.as_deref() == Some("install.esd")) {
+            Some("This install.esd is too big for FAT32 (see above).".into())
         } else if self.step.is_some() {
             Some("Checking the drive…".into())
         } else {
@@ -224,7 +316,7 @@ impl FlashScreen {
         let img_ok = self.image.is_some();
         let drv_ok = self.sel.selected().is_some();
         let ready = blocker.is_none();
-        let (mut pick_image, mut remove, mut pick_drive, mut flash) = (false, false, false, false);
+        let (mut pick_image, mut remove, mut pick_drive, mut flash, mut open_check) = (false, false, false, false, false);
 
         widgets::page_title(ui, "NyFlash", "Write a disk image to a USB drive.");
         ui.add_space(10.0);
@@ -250,13 +342,16 @@ impl FlashScreen {
                         ui.label(small_muted(sub));
                         ui.horizontal(|ui| {
                             let w = ui.available_width();
-                            let need = 150.0;
+                            let need = 236.0;
                             ui.add_space(((w - need) / 2.0).max(0.0));
                             if widgets::link_button(ui, "Change", true).clicked() {
                                 pick_image = true;
                             }
                             if widgets::link_button(ui, "Remove", true).clicked() {
                                 remove = true;
+                            }
+                            if widgets::link_button(ui, "Checksum", true).on_hover_text("Check the download against the checksum on its web page").clicked() {
+                                open_check = true;
                             }
                         });
                     }
@@ -284,7 +379,7 @@ impl FlashScreen {
             }
             _ => {
                 widgets::step_icon(ui, Icon::Flash, false, if ready { 1.0 } else { 0.0 }, ready);
-                let label = if self.step.is_some() { "Checking…" } else { "Flash!" };
+                let label = if self.step.is_some() { "Checking…" } else if self.windows_mode() { "Make installer" } else { "Flash!" };
                 let b = Btn::primary(label).big().enabled(ready).tip(blocker.as_deref().unwrap_or(""));
                 if b.show(ui).clicked() {
                     flash = true;
@@ -299,17 +394,71 @@ impl FlashScreen {
         });
         ui.add_space(14.0);
         // problems with the image or the match, below the steps
-        if let Some(img) = &self.image {
-            if img.windows_installer {
-                banner(
-                    ui,
-                    Tone::Warn,
-                    "This looks like a Windows installer",
-                    "Writing a Windows ISO straight to a drive usually does not give a bootable USB drive.",
-                    Some("NyForge can build one from the command line: nyforge windows. It is not in the app yet."),
-                );
-                ui.add_space(8.0);
-            }
+        if img_ok {
+            // Small and optional: read the drive back when the write is done (also switchable while it runs).
+            ui.vertical_centered(|ui| {
+                ui.checkbox(&mut self.verify_after, "Verify when done").on_hover_text("Reads the drive back afterwards and compares it with the image. Takes about as long as the write.");
+            });
+            ui.add_space(6.0);
+        }
+        if self.image.as_ref().is_some_and(|i| i.windows_installer) {
+            let w = ui.available_width().min(560.0);
+            ui.vertical_centered(|ui| {
+                ui.allocate_ui_with_layout(vec2(w, 10.0), egui::Layout::top_down(egui::Align::Min), |ui| {
+                    if self.win_as_is {
+                        banner(ui, Tone::Warn, "Writing this Windows ISO as it is", "A Windows ISO written byte for byte usually does not give a bootable USB drive.", None);
+                        if widgets::link_button(ui, "Make a Windows installer instead", true).clicked() {
+                            self.win_as_is = false;
+                        }
+                    } else {
+                        let win = self.image.as_ref().and_then(|i| i.win.clone());
+                        let own = win.as_ref().is_some_and(|w| w.own_unattend);
+                        let esd_too_big = win.as_ref().is_some_and(|w| w.exceeds_fat32 && w.install_image.as_deref() == Some("install.esd"));
+                        let mut text = String::from("NyForge builds a drive that boots on UEFI computers (Secure Boot too) and on old BIOS ones.");
+                        if let Some(w) = &win {
+                            if let Some(img) = &w.install_image {
+                                if w.exceeds_fat32 && img == "install.wim" {
+                                    text.push_str(&format!(" The install.wim ({}) is too big for FAT32 and is split automatically.", human_size(w.install_bytes)));
+                                } else if !w.exceeds_fat32 {
+                                    text.push_str(&format!(" It holds {img} ({}).", human_size(w.install_bytes)));
+                                }
+                            }
+                        }
+                        banner(ui, Tone::Info, "This is a Windows installer", &text, None);
+                        if esd_too_big {
+                            ui.add_space(6.0);
+                            let size = win.as_ref().map(|w| human_size(w.install_bytes)).unwrap_or_default();
+                            banner(
+                                ui,
+                                Tone::Error,
+                                "This installer cannot be made on a FAT32 drive",
+                                &format!("Its install.esd is {size}, more than FAT32 allows in one file, and the compact ESD format cannot be split."),
+                                Some("Use a build with install.wim, or one whose install.esd is under 4 GB."),
+                            );
+                        }
+                        if own {
+                            ui.add_space(6.0);
+                            banner(
+                                ui,
+                                Tone::Info,
+                                "This build brings its own setup answers",
+                                "Custom builds such as Tiny10 and Tiny11 include an autounattend.xml. NyForge leaves it exactly as it is.",
+                                None,
+                            );
+                        }
+                        ui.add_space(6.0);
+                        ui.add_enabled_ui(!own, |ui| {
+                            ui.checkbox(&mut self.win_bypass, "Skip the Windows 11 hardware checks (TPM, Secure Boot, RAM)")
+                                .on_hover_text(if own { "Not needed: this ISO already has its own setup answers." } else { "Adds an answer file so Setup installs on computers it would normally refuse. Only for Windows 11." });
+                        });
+                        ui.checkbox(&mut self.win_bios, "Also start on old BIOS computers (legacy boot)").on_hover_text("Untick for a UEFI-only drive.");
+                        if widgets::link_button(ui, "Write the ISO as it is instead", true).clicked() {
+                            self.win_as_is = true;
+                        }
+                    }
+                });
+            });
+            ui.add_space(8.0);
         }
         if let Some(f) = &self.image_error {
             banner(ui, Tone::Error, &f.title, &f.message, f.hint.as_deref());
@@ -332,6 +481,11 @@ impl FlashScreen {
         if pick_drive {
             self.sel.open_picker(&ctx);
         }
+        if open_check {
+            if let Some(i) = &self.image {
+                self.check.open(i.path.clone(), &ctx);
+            }
+        }
         if flash {
             self.start_check(&ctx);
         }
@@ -346,14 +500,33 @@ impl FlashScreen {
     }
 
     fn running_ui(&mut self, ui: &mut Ui) {
-        widgets::run_header(ui, Icon::Flash, "Flashing");
+        let verifying = self.kind == RunKind::VerifyOnly || self.run.as_ref().is_some_and(|r| r.is_verifying());
+        let (title, icon) = match (verifying, self.kind) {
+            (true, _) => ("Verifying", Icon::Check),
+            (_, RunKind::Windows) => ("Making the installer", Icon::Flash),
+            _ => ("Flashing", Icon::Flash),
+        };
+        widgets::run_header(ui, icon, title);
         let rows = self.rows();
         if let Some(run) = &self.run {
             run_panel(ui, Id::new("flash-run"), run, run.job.cancel_requested, &rows);
         }
         ui.add_space(8.0);
         let stopping = self.run.as_ref().map(|r| r.job.cancel_requested).unwrap_or(false);
+        // Still writing: a small, optional switch to read the drive back afterwards. Once on, it stays on.
+        let still_writing = self.kind != RunKind::VerifyOnly && self.run.as_ref().is_some_and(|r| r.finished.is_none() && !r.is_verifying());
         ui.vertical_centered(|ui| {
+            if still_writing && !stopping {
+                let mut v = self.verify_after;
+                let r = ui.add_enabled(!self.verify_after, egui::Checkbox::new(&mut v, "Verify when done")).on_hover_text("Reads the drive back afterwards and compares it with the image.");
+                if r.changed() && v {
+                    self.verify_after = true;
+                    if let Some(run) = &mut self.run {
+                        run.job.request_verify();
+                    }
+                }
+                ui.add_space(4.0);
+            }
             if Btn::new(if stopping { "Stopping…" } else { "Cancel" }).enabled(!stopping).tip("Already stopping").show(ui).clicked() {
                 self.ask_stop = true;
             }
@@ -366,44 +539,85 @@ impl FlashScreen {
         let outcome = self.outcome.clone().unwrap_or(Outcome::Running);
         let img = self.image.as_ref().map(|i| i.name.clone()).unwrap_or_default();
         let tgt = self.target.as_ref().map(|c| format!("{} ({}, {})", c.name, c.size_text(), c.drive.path)).unwrap_or_default();
-        let mut again = false;
+        let kind = self.kind;
+        let win = kind == RunKind::Windows;
+        let checking = kind == RunKind::VerifyOnly;
+        // The write itself finished (even if the read-back after it did not go well).
+        let write_finished = !checking && self.run.as_ref().is_some_and(|r| r.finished.is_some());
+        let verified = self.run.as_ref().and_then(|r| r.verified);
+        let (mut again, mut verify, mut check) = (false, false, false);
         ui.vertical_centered(|ui| {
             ui.add_space(18.0);
             match &outcome {
                 Outcome::Success => {
                     status_mark(ui, Id::new("flash-mark"), Tone::Success, true);
                     ui.add_space(6.0);
-                    ui.label(semibold_text("Flash complete!", 28.0));
+                    ui.label(semibold_text(
+                        match kind {
+                            RunKind::VerifyOnly => "Drive verified",
+                            RunKind::Windows => "Windows installer ready!",
+                            RunKind::Flash => "Flash complete!",
+                        },
+                        28.0,
+                    ));
                     ui.add_space(10.0);
                     let mut rows = vec![("Image", img.clone()), ("Drive", tgt.clone())];
-                    if let Some((secs, speed)) = self.run.as_ref().and_then(|r| r.finished) {
-                        if secs >= 0.0 {
-                            let sp = if speed > 0.0 { format!(" · {} average", super::fmt_speed(speed)) } else { String::new() };
-                            rows.push(("Time", format!("{}{}", super::fmt_duration(secs), sp)));
+                    if !checking {
+                        if let Some((secs, speed)) = self.run.as_ref().and_then(|r| r.finished) {
+                            if secs >= 0.0 {
+                                let sp = if speed > 0.0 { format!(" · {} average", super::fmt_speed(speed)) } else { String::new() };
+                                rows.push(("Time", format!("{}{}", super::fmt_duration(secs), sp)));
+                            }
                         }
+                    }
+                    if let Some((secs, _)) = verified {
+                        rows.push(("Verified", format!("Matches the image · read back in {}", super::fmt_duration(secs))));
                     }
                     widgets::result_card(ui, &rows);
                 }
                 Outcome::Cancelled => {
                     status_mark(ui, Id::new("flash-mark"), Tone::Warn, true);
                     ui.add_space(6.0);
-                    ui.label(semibold_text("Flash cancelled", 22.0));
-                    ui.label(muted(format!("Writing to {tgt} was stopped.")));
-                    ui.add_space(6.0);
-                    ui.allocate_ui(vec2(460.0, 10.0), |ui| {
-                        banner(ui, Tone::Warn, "The drive is probably unusable now", "It may hold a partly written image. Flash it again, or format it, before using it.", None);
-                    });
+                    if checking || write_finished {
+                        ui.label(semibold_text("Verification stopped", 22.0));
+                        ui.label(muted(if checking { format!("{tgt} was not checked to the end.") } else { format!("{img} is on {tgt}; it was just not read back to the end.") }));
+                    } else {
+                        ui.label(semibold_text(if win { "Installer cancelled" } else { "Flash cancelled" }, 22.0));
+                        ui.label(muted(format!("Writing to {tgt} was stopped.")));
+                        ui.add_space(6.0);
+                        ui.allocate_ui(vec2(460.0, 10.0), |ui| {
+                            banner(ui, Tone::Warn, "The drive is probably unusable now", "It may hold a partly written image. Flash it again, or format it, before using it.", None);
+                        });
+                    }
                 }
                 Outcome::Failed(f) => {
                     status_mark(ui, Id::new("flash-mark"), Tone::Error, true);
                     ui.add_space(6.0);
-                    ui.label(semibold_text("Flash failed", 22.0));
-                    ui.label(muted(format!("{img} was not written to {tgt}.")));
+                    let bad_copy = f.kind == Some(nyforge_core::error::ErrorKind::VerifyFailed);
+                    if bad_copy {
+                        ui.label(semibold_text(if checking { "The drive does not match" } else { "Written, but it does not verify" }, 22.0));
+                        ui.label(muted(format!("What {tgt} holds is not what {img} contains.")));
+                    } else if checking {
+                        ui.label(semibold_text("Could not verify", 22.0));
+                        ui.label(muted(format!("{tgt} could not be checked.")));
+                    } else if write_finished {
+                        ui.label(semibold_text("Written, but not verified", 22.0));
+                        ui.label(muted(format!("{img} was written to {tgt}; reading it back failed.")));
+                    } else {
+                        ui.label(semibold_text(if win { "Could not make the installer" } else { "Flash failed" }, 22.0));
+                        ui.label(muted(format!("{img} was not written to {tgt}.")));
+                    }
                     ui.add_space(6.0);
                     ui.allocate_ui(vec2(520.0, 10.0), |ui| {
                         banner(ui, Tone::Error, &f.title, &f.message, f.hint.as_deref());
                     });
-                    ui.label(small_muted("The drive may hold a partly written image. Try again, or format it before using it."));
+                    ui.label(small_muted(if bad_copy {
+                        "Do not rely on this drive. Write it again, or try another drive."
+                    } else if write_finished || checking {
+                        "The image itself was written; only the check did not finish."
+                    } else {
+                        "The drive may hold a partly written image. Try again, or format it before using it."
+                    }));
                 }
                 Outcome::Running => {}
             }
@@ -414,9 +628,41 @@ impl FlashScreen {
             if h {
                 sh.go = Some(Screen::Home);
             }
+            // Small and optional, after the fact: read the drive back, or check the download's checksum.
+            let can_verify = (write_finished || checking) && verified.is_none() && self.written.is_some() && self.image.is_some() && self.target.is_some();
+            let can_check = self.image.is_some();
+            if can_verify || can_check {
+                ui.add_space(8.0);
+                ui.horizontal(|ui| {
+                    let need = if can_verify && can_check { 240.0 } else { 120.0 };
+                    ui.add_space(((ui.available_width() - need) / 2.0).max(0.0));
+                    if can_verify {
+                        let label = if matches!(outcome, Outcome::Success) && !checking { "Verify drive" } else { "Verify again" };
+                        let tip = if cfg!(target_os = "macos") {
+                            "Reads the drive back and compares it with the image. macOS may ask for your password again."
+                        } else {
+                            "Reads the drive back and compares it with the image. Nothing is written."
+                        };
+                        if widgets::link_button(ui, label, true).on_hover_text(tip).clicked() {
+                            verify = true;
+                        }
+                    }
+                    if can_check && widgets::link_button(ui, "Check checksum", true).on_hover_text("Check the download against the checksum on its web page").clicked() {
+                        check = true;
+                    }
+                });
+            }
         });
+        let ctx = ui.ctx().clone();
+        if verify {
+            self.start_verify(&ctx);
+        }
+        if check {
+            if let Some(i) = &self.image {
+                self.check.open(i.path.clone(), &ctx);
+            }
+        }
         if again {
-            let ctx = ui.ctx().clone();
             if matches!(outcome, Outcome::Success) {
                 self.image = None;
             }
@@ -430,6 +676,8 @@ impl FlashScreen {
         if matches!(self.stage, Stage::Setup) {
             self.sel.modal(ctx);
         }
+        self.check.ui(ctx);
+        let win = self.windows_mode();
         // confirmation
         let mut accept = false;
         let mut cancel_confirm = false;
@@ -439,7 +687,7 @@ impl FlashScreen {
                 let img_name = self.image.as_ref().map(|i| i.name.clone()).unwrap_or_default();
                 let img_size = self.image.as_ref().map(|i| human_size(i.file_size)).unwrap_or_default();
                 let (_, close) = dialog(ctx, "flash-confirm", 440.0, |ui| {
-                    ui.label(heading("Erase this drive and flash?"));
+                    ui.label(heading(if win { "Erase this drive and make the installer?" } else { "Erase this drive and flash?" }));
                     ui.add_space(8.0);
                     kv(ui, "Image", RichText::new(format!("{img_name}  ({img_size})")));
                     ui.add_space(4.0);
@@ -451,7 +699,7 @@ impl FlashScreen {
                         banner(ui, Tone::Warn, "", w, None);
                     }
                     dialog_buttons(ui, |ui| {
-                        if Btn::destructive(if rechecking { "Checking…" } else { "Erase and flash" }).enabled(!rechecking).show(ui).clicked() {
+                        if Btn::destructive(if rechecking { "Checking…" } else if win { "Erase and make installer" } else { "Erase and flash" }).enabled(!rechecking).show(ui).clicked() {
                             accept = true;
                         }
                         if Btn::new("Cancel").enabled(!rechecking).show(ui).clicked() {
@@ -474,14 +722,21 @@ impl FlashScreen {
         }
         // stop confirmation
         if self.ask_stop && matches!(self.stage, Stage::Running) {
+            let reading = self.kind == RunKind::VerifyOnly || self.run.as_ref().is_some_and(|r| r.is_verifying());
             let mut stop = false;
             let mut keep = false;
             let (_, close) = dialog(ctx, "flash-stop", 400.0, |ui| {
-                ui.label(heading("Stop flashing?"));
-                ui.add_space(6.0);
-                ui.label(muted("The drive will be left with a partly written image and will not work until it is flashed or formatted again."));
+                if reading {
+                    ui.label(heading("Stop checking?"));
+                    ui.add_space(6.0);
+                    ui.label(muted("The image is already on the drive. It just will not be read back to the end."));
+                } else {
+                    ui.label(heading(if win { "Stop making the installer?" } else { "Stop flashing?" }));
+                    ui.add_space(6.0);
+                    ui.label(muted("The drive will be left with a partly written image and will not work until it is flashed or formatted again."));
+                }
                 dialog_buttons(ui, |ui| {
-                    if Btn::destructive("Stop flashing").show(ui).clicked() {
+                    if Btn::destructive(if reading { "Stop checking" } else if win { "Stop" } else { "Stop flashing" }).show(ui).clicked() {
                         stop = true;
                     }
                     if Btn::new("Keep going").show(ui).clicked() {

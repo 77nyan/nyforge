@@ -37,6 +37,9 @@ pub struct WindowsArgs {
     pub allow_internal: bool,
     #[arg(long)]
     pub allow_virtual: bool,
+    /// When it is made, read the drive back and compare every file with the ISO
+    #[arg(long)]
+    pub verify: bool,
     #[arg(long)]
     pub json: bool,
 }
@@ -50,6 +53,8 @@ pub fn run(a: WindowsArgs) -> Res {
     }
     let file_size = match &a.size {
         Some(s) => Some(parse_size(s).ok_or_else(|| NyError::invalid(format!("\"{s}\" is not a size like 16G or 512M.")))?),
+        // An image file that already exists keeps its size (that is also how the app's test drives work).
+        None if t.drive.is_none() => std::fs::metadata(&t.path).ok().filter(|m| m.is_file() && m.len() > 0).map(|m| m.len()),
         None => None,
     };
     let drives: Vec<&Drive> = t.drive.iter().collect();
@@ -78,10 +83,13 @@ pub fn run(a: WindowsArgs) -> Res {
                 ui.render(&ev);
             }
         };
-        make_windows_media(&a.iso, &t, &opts, cancel, &mut emit)
+        make_windows_media(&a.iso, &t, &opts, cancel.clone(), &mut emit)
     };
     ui.finish_line();
     let rep = res?;
+    if a.verify || crate::verify_requested() {
+        crate::verify_cmd::verify_windows_after(&a.iso, &t, &opts, a.json, &mut ui, cancel.clone())?;
+    }
     if !a.json {
         eprintln!("{} Windows installer ready on {} ({}, volume {}).", ui.green("✔"), t.display, human_size(rep.bytes), rep.label);
         for n in &rep.notes {

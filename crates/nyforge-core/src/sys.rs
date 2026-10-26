@@ -88,6 +88,83 @@ pub fn elevation_hint() -> &'static str {
     }
 }
 
+// ------------------------------------------------------------------- a drive that drops out and comes back
+
+/// Windows says the device is gone or stopped answering for a moment: ERROR_NOT_READY 21, ERROR_NETNAME_DELETED 64 is
+/// not included (network), ERROR_BAD_NET_RESP 58 neither; these are the ones a USB stick that resets gives:
+/// 21 not ready, 31 general failure, 121 semaphore timeout, 433 device does not exist, 1117 I/O device error,
+/// 1167 device not connected. Nothing is "gone" on the other systems (their device nodes do not come back reliably).
+pub fn is_device_gone(e: &io::Error) -> bool {
+    cfg!(windows) && e.raw_os_error().is_some_and(|c| matches!(c, 21 | 31 | 121 | 433 | 1117 | 1167))
+}
+
+/// Do these two descriptions belong to the very same physical drive? A drive that came back must match on model,
+/// serial (when both have one), size and sector size, or nothing is written to it.
+pub fn same_drive(a: &crate::device::Drive, b: &crate::device::Drive) -> bool {
+    a.path.eq_ignore_ascii_case(&b.path)
+        && a.size == b.size
+        && a.sector_size == b.sector_size
+        && a.model.trim() == b.model.trim()
+        && a.vendor.trim() == b.vendor.trim()
+        && match (&a.serial, &b.serial) {
+            (Some(x), Some(y)) => x == y,
+            _ => true,
+        }
+}
+
+/// Write `data` at `off`. When that fails because the drive dropped out, `recover` may hand back a fresh handle to
+/// the same drive (`attempt` counts from 0); the write then goes on from the same place with it. `recover` returns
+/// `None` to give up, and the original error is reported.
+pub fn write_all_at_resilient(
+    file: &mut File,
+    data: &[u8],
+    off: u64,
+    recover: &mut dyn FnMut(u32, &io::Error) -> Option<io::Result<File>>,
+) -> io::Result<()> {
+    let mut attempt = 0u32;
+    loop {
+        match write_all_at(file, data, off) {
+            Ok(()) => return Ok(()),
+            Err(e) => match recover(attempt, &e) {
+                Some(Ok(f)) => {
+                    *file = f;
+                    attempt += 1;
+                }
+                Some(Err(e2)) => return Err(e2),
+                None => return Err(e),
+            },
+        }
+    }
+}
+
+/// Windows: wait for a drive that dropped out to come back and open it again, but only when it is the same drive.
+/// Anywhere else, or if it does not return in time, this fails and the write ends with the original error.
+pub fn reopen_after_dropout(path: &Path, was: &crate::device::Drive, direct: bool) -> io::Result<File> {
+    #[cfg(windows)]
+    {
+        use crate::device::{resolve_target, ResolvedTarget, TargetPolicy};
+        for _ in 0..12 {
+            std::thread::sleep(std::time::Duration::from_millis(1000));
+            let now = match resolve_target(&was.path, TargetPolicy::default()) {
+                Ok(ResolvedTarget::Device(d)) => d,
+                _ => continue,
+            };
+            if !same_drive(was, &now) {
+                return Err(io::Error::other("The drive that came back is not the one that was being written."));
+            }
+            if let Ok(f) = imp::open_target(path, TargetKind::BlockDevice, direct) {
+                return Ok(f);
+            }
+        }
+        Err(io::Error::other("The drive did not come back."))
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = (path, was, direct);
+        Err(io::Error::other("A drive that dropped out cannot be picked up again here."))
+    }
+}
+
 // ------------------------------------------------------------------- positional I/O
 
 #[cfg(unix)]
@@ -287,6 +364,36 @@ mod imp {
             o.custom_flags(libc::O_CLOEXEC | CLAIM);
         }
         o.open(io_node(path))
+    }
+
+
+    /// Open for reading only, without claiming the drive (it may be mounted again by now), uncached when `direct`
+    /// so that what is read really comes from the hardware.
+    pub fn open_read(path: &Path, kind: TargetKind, direct: bool) -> io::Result<File> {
+        match kind {
+            TargetKind::File => File::open(path),
+            TargetKind::BlockDevice => {
+                let f = OpenOptions::new().read(true).custom_flags(libc::O_CLOEXEC | direct_flag(direct)).open(io_node(path))?;
+                #[cfg(target_os = "macos")]
+                if direct {
+                    set_direct(&f, true);
+                }
+                Ok(f)
+            }
+        }
+    }
+
+    /// Throw away anything the kernel still caches for this device (best effort), so the next reads hit the hardware.
+    pub fn drop_cache(file: &File) {
+        #[cfg(target_os = "linux")]
+        {
+            use std::os::fd::AsRawFd;
+            const BLKFLSBUF: libc::Ioctl = 0x1261;
+            unsafe {
+                libc::ioctl(file.as_raw_fd(), BLKFLSBUF, 0);
+            }
+        }
+        let _ = file;
     }
 
     pub fn is_root() -> bool {
@@ -500,6 +607,24 @@ mod imp {
         OpenOptions::new().read(true).write(true).share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE).open(path)
     }
 
+
+    /// Open for reading only; sharing with whatever has the volumes open. Uncached when `direct`.
+    pub fn open_read(path: &Path, kind: TargetKind, direct: bool) -> io::Result<File> {
+        match kind {
+            TargetKind::File => File::open(path),
+            TargetKind::BlockDevice => {
+                let mut o = OpenOptions::new();
+                o.read(true).share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE);
+                if direct {
+                    o.custom_flags(FILE_FLAG_NO_BUFFERING);
+                }
+                o.open(path)
+            }
+        }
+    }
+
+    pub fn drop_cache(_file: &File) {}
+
     /// Is this process running with administrator rights (an elevated token)?
     ///
     /// Only a definite "no" returns false: if Windows will not tell us, we let the real
@@ -558,6 +683,14 @@ mod imp {
     pub fn open_rw(p: &Path, _x: bool) -> io::Result<File> {
         OpenOptions::new().read(true).write(true).open(p)
     }
+
+    pub fn open_read(p: &Path, kind: TargetKind, _direct: bool) -> io::Result<File> {
+        match kind {
+            TargetKind::File => File::open(p),
+            TargetKind::BlockDevice => Err(unsupported()),
+        }
+    }
+    pub fn drop_cache(_f: &File) {}
     pub fn is_root() -> bool {
         true
     }
@@ -565,7 +698,7 @@ mod imp {
 
 /// Does this process have the rights to write to drives (root, or an elevated Administrator)?
 pub use imp::is_root;
-pub use imp::{finish_device, open_rw, open_rw_direct, open_target, prepare_device, set_direct, zero_range};
+pub use imp::{drop_cache, finish_device, open_read, open_rw, open_rw_direct, open_target, prepare_device, set_direct, zero_range};
 
 #[cfg(not(any(unix, windows)))]
 pub fn write_all_at(_f: &File, _buf: &[u8], _off: u64) -> io::Result<()> {
@@ -578,6 +711,71 @@ pub fn read_exact_at(_f: &File, _buf: &mut [u8], _off: u64) -> io::Result<()> {
 
 #[cfg(test)]
 mod tests {
+    use crate::device::{Bus, Drive, Safety};
+
+    fn drive(serial: Option<&str>, size: u64) -> Drive {
+        Drive {
+            path: "\\\\.\\PhysicalDrive1".into(),
+            vendor: "SanDisk".into(),
+            model: "3.2Gen1".into(),
+            serial: serial.map(String::from),
+            size,
+            sector_size: 512,
+            bus: Bus::Usb,
+            removable: true,
+            read_only: false,
+            safety: Safety::Safe,
+            partitions: vec![],
+        }
+    }
+
+    #[test]
+    fn only_the_very_same_drive_counts_as_the_drive_that_came_back() {
+        let a = drive(Some("AA11"), 32_000_000_000);
+        assert!(same_drive(&a, &a.clone()));
+        assert!(same_drive(&a, &drive(None, 32_000_000_000)), "no serial on one side: size and model decide");
+        assert!(!same_drive(&a, &drive(Some("BB22"), 32_000_000_000)), "another stick of the same make");
+        assert!(!same_drive(&a, &drive(Some("AA11"), 16_000_000_000)), "a different size");
+        let mut moved = a.clone();
+        moved.path = "\\\\.\\PhysicalDrive2".into();
+        assert!(!same_drive(&a, &moved), "another disk number");
+    }
+
+    #[test]
+    fn a_write_that_fails_goes_on_with_the_handle_recovery_gives_and_never_loops_forever() {
+        let dir = std::env::temp_dir().join(format!("nyforge-resil-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("d.img");
+        std::fs::write(&path, vec![0u8; 8192]).unwrap();
+        // A handle that cannot be written to stands in for a drive that dropped out.
+        let mut file = std::fs::File::open(&path).unwrap();
+        let p2 = path.clone();
+        let mut calls = vec![];
+        let r = write_all_at_resilient(&mut file, b"HELLO", 4096, &mut |attempt, _e| {
+            calls.push(attempt);
+            Some(std::fs::OpenOptions::new().write(true).open(&p2))
+        });
+        assert!(r.is_ok(), "{r:?}");
+        assert_eq!(calls, vec![0], "recovered once, then the write went through");
+        assert_eq!(&std::fs::read(&path).unwrap()[4096..4101], b"HELLO");
+
+        // Recovery says no: the original error comes out.
+        let mut ro = std::fs::File::open(&path).unwrap();
+        assert!(write_all_at_resilient(&mut ro, b"X", 0, &mut |_, _| None).is_err());
+        // Recovery fails: its error comes out.
+        let mut ro = std::fs::File::open(&path).unwrap();
+        let e = write_all_at_resilient(&mut ro, b"X", 0, &mut |_, _| Some(Err(io::Error::other("gone")))).unwrap_err();
+        assert_eq!(e.to_string(), "gone");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn dropout_errors_are_recognised_only_where_a_drive_can_come_back() {
+        let e = io::Error::from_raw_os_error(433);
+        assert_eq!(is_device_gone(&e), cfg!(windows));
+        assert!(!is_device_gone(&io::Error::from_raw_os_error(5)), "access denied is not a dropout");
+    }
+
     use super::*;
 
     #[test]

@@ -23,7 +23,7 @@ use crate::sys::{self, TargetKind};
 use crate::wim::{SplitPlan, WimSource, FAT32_PART_BYTES};
 use crate::writer::Target;
 use fatfs::{FatType, FileSystem, FormatVolumeOptions, FsOptions, ReadWriteSeek};
-use std::io::{Seek, SeekFrom, Write};
+use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
@@ -268,6 +268,42 @@ impl<W: Write> Write for ProgressWriter<'_, '_, W> {
     }
 }
 
+
+/// Decide what happens to `install.wim`: copied as it is, or split into parts that fit a FAT32 file.
+fn decide_plan(iso: &IsoImage, win: &probe::WindowsInfo, opts: &WindowsOptions, notes: &mut Vec<String>) -> Result<Plan> {
+    Ok(match win.install_image.as_deref() {
+        Some("install.wim") if win.exceeds_fat32 || opts.part_bytes < win.install_bytes => {
+            let e = iso.find("sources/install.wim")?.unwrap();
+            let sp = SplitPlan::new(&IsoFile { iso, entry: &e }, opts.part_bytes.min(FAT32_PART_BYTES))?;
+            notes.push(format!("install.wim ({}) was split into {} parts for FAT32.", human_size(win.install_bytes), sp.part_count()));
+            Plan::Split(Box::new(sp))
+        }
+        Some("install.esd") if win.exceeds_fat32 => {
+            return Err(NyError::new(
+                ErrorKind::ImageUnsupported,
+                format!("install.esd is {}: too big for FAT32 and the compact (ESD) format cannot be split.", human_size(win.install_bytes)),
+            )
+            .with_hint("Use an ISO with install.wim (from Microsoft's download page)."));
+        }
+        _ => Plan::Copy,
+    })
+}
+
+/// How many bytes end up on the drive from the ISO's files.
+fn plan_total(iso: &IsoImage, plan: &Plan) -> Result<u64> {
+    let mut total = 0u64;
+    for (p, size) in iso.walk(1_000_000)? {
+        if matches!(plan, Plan::Split(_)) && p.eq_ignore_ascii_case("sources/install.wim") {
+            continue;
+        }
+        total += size;
+    }
+    if let Plan::Split(sp) = plan {
+        total += sp.total_bytes();
+    }
+    Ok(total)
+}
+
 pub fn make_windows_media(
     iso_path: &Path,
     target: &Target,
@@ -286,35 +322,8 @@ pub fn make_windows_media(
     }
     let mut notes = vec![];
 
-    // Decide what happens to install.wim.
-    let plan = match win.install_image.as_deref() {
-        Some("install.wim") if win.exceeds_fat32 || opts.part_bytes < win.install_bytes => {
-            let e = iso.find("sources/install.wim")?.unwrap();
-            let sp = SplitPlan::new(&IsoFile { iso: &iso, entry: &e }, opts.part_bytes.min(FAT32_PART_BYTES))?;
-            notes.push(format!("install.wim ({}) was split into {} parts for FAT32.", human_size(win.install_bytes), sp.part_count()));
-            Plan::Split(Box::new(sp))
-        }
-        Some("install.esd") if win.exceeds_fat32 => {
-            return Err(NyError::new(
-                ErrorKind::ImageUnsupported,
-                format!("install.esd is {}: too big for FAT32 and the compact (ESD) format cannot be split.", human_size(win.install_bytes)),
-            )
-            .with_hint("Use an ISO with install.wim (from Microsoft's download page)."));
-        }
-        _ => Plan::Copy,
-    };
-
-    // How much will be written.
-    let mut total = 0u64;
-    for (p, size) in iso.walk(1_000_000)? {
-        if matches!(plan, Plan::Split(_)) && p.eq_ignore_ascii_case("sources/install.wim") {
-            continue;
-        }
-        total += size;
-    }
-    if let Plan::Split(sp) = &plan {
-        total += sp.total_bytes();
-    }
+    let plan = decide_plan(&iso, &win, opts, &mut notes)?;
+    let total = plan_total(&iso, &plan)?;
 
     let disk_bytes = match target.kind {
         TargetKind::BlockDevice => target.capacity.ok_or_else(|| NyError::other("unknown drive size"))?,
@@ -359,18 +368,14 @@ pub fn make_windows_media(
     let align = sys::block_io_align(target.kind);
     let whole = FileIo::new(file, 0, (disk_bytes / SECTOR) * SECTOR, align);
 
-    emit(Event::Phase { phase: Phase::Writing, detail: "Writing the partition table and boot code".into() });
+    emit(Event::Phase { phase: Phase::Writing, detail: "Clearing the drive".into() });
     whole.zero(0, 1 << 20).map_err(|e| NyError::from_io(&e, "clearing the start of the drive"))?;
     whole.zero(whole.len() - (1 << 20), 1 << 20).map_err(|e| NyError::from_io(&e, "clearing the end of the drive"))?;
     let mut sig = [0u8; 4];
     let _ = getrandom::fill(&mut sig);
     let mbr = windows_mbr(u32::from_le_bytes(sig) | 0x0100_0000, MIB_SECTORS, part_sectors);
-    if opts.bios {
-        let mut core = assets::CORE_WIN_IMG.to_vec();
-        core.resize(core.len().next_multiple_of(SECTOR as usize), 0);
-        whole.write_at(&core, SECTOR).map_err(|e| NyError::from_io(&e, "writing GRUB"))?;
-    }
-    whole.write_at(&mbr, 0).map_err(|e| NyError::from_io(&e, "writing the boot sector"))?;
+    // The partition table and boot code go in last (see `WriteOptions::defer_head`): Windows mounts a new partition
+    // the moment the table appears, and then refuses writes into it.
 
     emit(Event::Phase { phase: Phase::Writing, detail: format!("Formatting {} as FAT32", human_size(part_bytes)) });
     let part_io = whole.sub(MIB_SECTORS * SECTOR, part_bytes).map_err(|e| NyError::from_io(&e, "partitioning"))?;
@@ -436,8 +441,15 @@ pub fn make_windows_media(
         let _ = fs.stats(); // fills in FSInfo's free-cluster count
         fs.unmount().map_err(fat_err)?;
     }
-    emit(Event::Phase { phase: Phase::Finalizing, detail: "Flushing to the drive".into() });
+    emit(Event::Phase { phase: Phase::Finalizing, detail: "Writing the partition table and boot code".into() });
     cs.flush_all().map_err(fat_err)?;
+    if opts.bios {
+        let mut core = assets::CORE_WIN_IMG.to_vec();
+        core.resize(core.len().next_multiple_of(SECTOR as usize), 0);
+        whole.write_at(&core, SECTOR).map_err(|e| NyError::from_io(&e, "writing GRUB"))?;
+    }
+    whole.write_at(&mbr, 0).map_err(|e| NyError::from_io(&e, "writing the boot sector"))?;
+    emit(Event::Phase { phase: Phase::Finalizing, detail: "Flushing to the drive".into() });
     whole.sync().map_err(|e| NyError::from_io(&e, "flushing the drive"))?;
     drop(cs);
     drop(whole);
@@ -456,6 +468,279 @@ pub fn make_windows_media(
         avg_speed_bps: if elapsed.as_secs_f64() > 0.0 { total as f64 / elapsed.as_secs_f64() } else { 0.0 },
     });
     Ok(WindowsReport { bytes: total, label, split_parts: if let Plan::Split(sp) = &plan { sp.part_count() } else { 0 }, notes })
+}
+
+// ------------------------------------------------------------------------------------------------ verifying
+
+#[derive(Debug, Clone)]
+pub struct WindowsVerifyReport {
+    /// Bytes of ISO content compared.
+    pub bytes: u64,
+    /// Files compared (a split `install.wim` counts once per part).
+    pub files: usize,
+    pub elapsed: Duration,
+}
+
+fn differs(what: &str, at: u64) -> NyError {
+    NyError::new(ErrorKind::VerifyFailed, format!("{what} on the drive is not the same as in the ISO (first difference at byte {at} of the file)."))
+        .with_hint("Make the installer again. If it keeps happening the drive is probably failing; NyFormat's bad-block check can confirm that.")
+}
+
+fn missing(what: &str) -> NyError {
+    NyError::new(ErrorKind::VerifyFailed, format!("{what} is missing from the drive."))
+        .with_hint("Make the installer again; the drive may not have been finished, or it is not a NyForge Windows installer.")
+}
+
+/// Read what a FAT file holds, expecting `want` bytes in total, and compare as it goes: used for `install.wim` parts,
+/// which are regenerated from the ISO and streamed through here.
+struct CompareWriter<'a> {
+    on_drive: &'a mut dyn Read,
+    pos: u64,
+    wrong_at: Option<u64>,
+    short: bool,
+    scratch: Vec<u8>,
+}
+
+impl Write for CompareWriter<'_> {
+    fn write(&mut self, data: &[u8]) -> std::io::Result<usize> {
+        if self.scratch.len() < data.len() {
+            self.scratch.resize(data.len(), 0);
+        }
+        let got = &mut self.scratch[..data.len()];
+        if let Err(e) = self.on_drive.read_exact(got) {
+            if e.kind() == std::io::ErrorKind::UnexpectedEof {
+                self.short = true;
+            }
+            return Err(std::io::Error::other("the drive's file is shorter than expected"));
+        }
+        if let Some(i) = got.iter().zip(data).position(|(a, b)| a != b) {
+            self.wrong_at = Some(self.pos + i as u64);
+            return Err(std::io::Error::other("the drive's file differs"));
+        }
+        self.pos += data.len() as u64;
+        Ok(data.len())
+    }
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+/// Is there anything left in a file that should have ended?
+fn has_more(f: &mut dyn Read) -> bool {
+    let mut one = [0u8; 1];
+    matches!(f.read(&mut one), Ok(n) if n > 0)
+}
+
+fn compare_with_iso(job: &mut Job<'_>, e: &Entry, path: &str, on_drive: &mut dyn Read, emit: &mut dyn FnMut(Event), a: &mut [u8], b: &mut [u8]) -> Result<()> {
+    let mut off = 0u64;
+    while off < e.size {
+        if job.cancel.load(Ordering::Relaxed) {
+            return Err(NyError::cancelled());
+        }
+        let n = job.iso.read(e, off, a)?;
+        if n == 0 {
+            return Err(NyError::new(ErrorKind::ImageCorrupt, format!("The ISO ends in the middle of {path}.")));
+        }
+        if let Err(err) = on_drive.read_exact(&mut b[..n]) {
+            return Err(if err.kind() == std::io::ErrorKind::UnexpectedEof {
+                NyError::new(ErrorKind::VerifyFailed, format!("{path} on the drive is shorter than in the ISO.")).with_hint("Make the installer again.")
+            } else {
+                NyError::from_io(&err, &format!("reading {path} back"))
+            });
+        }
+        if let Some(i) = a[..n].iter().zip(&b[..n]).position(|(x, y)| x != y) {
+            return Err(differs(path, off + i as u64));
+        }
+        off += n as u64;
+        job.advance(n as u64, emit);
+    }
+    if has_more(on_drive) {
+        return Err(NyError::new(ErrorKind::VerifyFailed, format!("{path} on the drive is longer than in the ISO.")).with_hint("Make the installer again."));
+    }
+    Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
+fn verify_tree<IO: ReadWriteSeek>(
+    job: &mut Job<'_>,
+    iso_dir: &str,
+    dir: &fatfs::Dir<'_, IO>,
+    plan: &Plan,
+    files: &mut usize,
+    emit: &mut dyn FnMut(Event),
+    a: &mut [u8],
+    b: &mut [u8],
+) -> Result<()> {
+    for e in job.iso.list(iso_dir)? {
+        if job.cancel.load(Ordering::Relaxed) {
+            return Err(NyError::cancelled());
+        }
+        let path = if iso_dir.is_empty() { e.name.clone() } else { format!("{iso_dir}/{}", e.name) };
+        if e.is_dir {
+            let sub = dir.open_dir(&e.name).map_err(|_| missing(&format!("The folder {path}")))?;
+            verify_tree(job, &path, &sub, plan, files, emit, a, b)?;
+            continue;
+        }
+        if let Plan::Split(sp) = plan {
+            if path.eq_ignore_ascii_case("sources/install.wim") {
+                let src = IsoFile { iso: job.iso, entry: &e };
+                for i in 0..sp.part_count() {
+                    let name = SplitPlan::part_name("install", i);
+                    let mut f = dir.open_file(&name).map_err(|_| missing(&format!("sources/{name}")))?;
+                    let cancel = job.cancel;
+                    let mut pending = 0u64;
+                    let mut cw = CompareWriter { on_drive: &mut f, pos: 0, wrong_at: None, short: false, scratch: vec![] };
+                    let r = {
+                        let mut w = ProgressWriter { inner: &mut cw, job, emit, pending: &mut pending };
+                        sp.write_part(i, &src, &mut w, cancel, &mut |_| {})
+                    };
+                    if let Some(at) = cw.wrong_at {
+                        return Err(differs(&format!("sources/{name}"), at));
+                    }
+                    if cw.short {
+                        return Err(NyError::new(ErrorKind::VerifyFailed, format!("sources/{name} on the drive is shorter than it should be.")).with_hint("Make the installer again."));
+                    }
+                    r?;
+                    if has_more(&mut f) {
+                        return Err(NyError::new(ErrorKind::VerifyFailed, format!("sources/{name} on the drive is longer than it should be.")).with_hint("Make the installer again."));
+                    }
+                    *files += 1;
+                }
+                continue;
+            }
+        }
+        let mut f = dir.open_file(&e.name).map_err(|_| missing(&path))?;
+        compare_with_iso(job, &e, &path, &mut f, emit, a, b)?;
+        *files += 1;
+    }
+    Ok(())
+}
+
+/// Read a small file by its path from the root of the FAT volume.
+fn read_small<IO: ReadWriteSeek>(root: &fatfs::Dir<'_, IO>, path: &str) -> Result<Vec<u8>> {
+    let mut parts: Vec<&str> = path.split('/').collect();
+    let file = parts.pop().unwrap_or("");
+    let mut dir = root.clone();
+    for p in parts {
+        dir = dir.open_dir(p).map_err(|_| missing(path))?;
+    }
+    let mut f = dir.open_file(file).map_err(|_| missing(path))?;
+    let mut v = vec![];
+    f.read_to_end(&mut v).map_err(|e| NyError::from_io(&e, &format!("reading {path} back")))?;
+    Ok(v)
+}
+
+/// Read a Windows installer made by [`make_windows_media`] back and compare it with the ISO.
+///
+/// Checks the partition table and boot code, then every file the ISO contains (a split `install.wim` is regenerated
+/// from the ISO and compared part by part), plus the small files NyForge adds. Writes nothing.
+pub fn verify_windows_media(iso_path: &Path, target: &Target, opts: &WindowsOptions, cancel: Arc<AtomicBool>, emit: &mut dyn FnMut(Event)) -> Result<WindowsVerifyReport> {
+    let iso = IsoImage::open(iso_path)?;
+    let report = probe::analyze(&iso, std::fs::metadata(iso_path).map(|m| m.len()).unwrap_or(0))?;
+    if report.verdict != Verdict::WindowsInstaller {
+        return Err(NyError::invalid("This ISO is not a Windows installer."));
+    }
+    let win = report.windows.clone().unwrap();
+    emit(Event::Phase { phase: Phase::Verifying, detail: "Reading the drive back".into() });
+    let started = Instant::now();
+
+    let disk_bytes = match target.kind {
+        TargetKind::BlockDevice => target.capacity.ok_or_else(|| NyError::other("unknown drive size"))?,
+        TargetKind::File => std::fs::metadata(&target.path).map_err(|e| NyError::from_io(&e, &format!("reading {}", target.display)))?.len(),
+    };
+    let file = sys::open_read(&target.path, target.kind, false).map_err(|e| NyError::from_io(&e, &format!("opening {}", target.display)))?;
+    if target.kind == TargetKind::BlockDevice {
+        sys::drop_cache(&file);
+    }
+    let whole = FileIo::new(file, 0, (disk_bytes / SECTOR) * SECTOR, sys::block_io_align(target.kind));
+    let io_err = |e: std::io::Error| NyError::from_io(&e, &format!("reading {} back", target.display));
+
+    // Partition table and boot code.
+    let mut sector0 = [0u8; 512];
+    whole.read_at(&mut sector0, 0).map_err(io_err)?;
+    let parts = crate::nyboot::layout::parse_mbr(&sector0).unwrap_or_default();
+    let (start, sectors) = match parts.as_slice() {
+        [(0x0C, start, sectors)] => (*start, *sectors),
+        _ => {
+            return Err(NyError::new(ErrorKind::VerifyFailed, "The drive does not have the partition table of a NyForge Windows installer.")
+                .with_hint("Make the installer first; this drive may hold something else."))
+        }
+    };
+    let sig = u32::from_le_bytes(sector0[440..444].try_into().unwrap());
+    if sector0[..] != windows_mbr(sig, start, sectors)[..] {
+        return Err(NyError::new(ErrorKind::VerifyFailed, "The boot sector on the drive is not the one NyForge writes.").with_hint("Make the installer again."));
+    }
+    if opts.bios {
+        let mut core = assets::CORE_WIN_IMG.to_vec();
+        core.resize(core.len().next_multiple_of(SECTOR as usize), 0);
+        let mut got = vec![0u8; core.len()];
+        whole.read_at(&mut got, SECTOR).map_err(io_err)?;
+        if got != core {
+            return Err(NyError::new(ErrorKind::VerifyFailed, "The legacy-BIOS boot code on the drive is damaged.").with_hint("Make the installer again, or make a UEFI-only stick."));
+        }
+    }
+    if (start + sectors) * SECTOR > whole.len() {
+        return Err(NyError::new(ErrorKind::VerifyFailed, "The partition on the drive reaches past the end of the drive."));
+    }
+
+    let part_io = whole.sub(start * SECTOR, sectors * SECTOR).map_err(io_err)?;
+    let mut cs = CachedStream::new(part_io);
+    let fs = FileSystem::new(&mut cs, FsOptions::new()).map_err(|_| NyError::new(ErrorKind::VerifyFailed, "The drive's Windows partition is not a readable FAT32 volume.").with_hint("Make the installer again."))?;
+    if fs.fat_type() != FatType::Fat32 {
+        return Err(NyError::new(ErrorKind::VerifyFailed, "The drive's Windows partition is not FAT32."));
+    }
+    let root = fs.root_dir();
+
+    // The split image carries its own GUID; take it from the drive so the parts can be rebuilt identically.
+    let mut notes = vec![];
+    let mut plan = decide_plan(&iso, &win, opts, &mut notes)?;
+    if let Plan::Split(sp) = plan {
+        let head = read_small_head(&root, "sources/install.swm")?;
+        let guid = SplitPlan::guid_of_part(&head).ok_or_else(|| NyError::new(ErrorKind::VerifyFailed, "sources/install.swm on the drive is not a Windows image part."))?;
+        plan = Plan::Split(Box::new((*sp).with_guid(guid)));
+    }
+    let total = plan_total(&iso, &plan)?;
+    let mut job = Job {
+        iso: &iso,
+        cancel: &cancel,
+        total,
+        done: 0,
+        meter: SpeedMeter::new(Duration::from_secs(3)),
+        last_emit: Instant::now() - Duration::from_secs(1),
+        target: target.display.clone(),
+    };
+    let (mut a, mut b) = (vec![0u8; 1 << 20], vec![0u8; 1 << 20]);
+    let mut files = 0usize;
+    verify_tree(&mut job, "", &root, &plan, &mut files, emit, &mut a, &mut b)?;
+
+    // The small files NyForge adds.
+    if opts.bios && read_small(&root, "boot/grub/grub.cfg")? != GRUB_CFG.as_bytes() {
+        return Err(differs("boot/grub/grub.cfg", 0));
+    }
+    let arch = if win.uefi_arm64 && !win.uefi_x64 { "arm64" } else { "amd64" };
+    if let Some(xml) = autounattend_xml(arch, &opts.unattend) {
+        if !iso.exists("autounattend.xml") && read_small(&root, "autounattend.xml")? != xml.as_bytes() {
+            return Err(differs("autounattend.xml", 0));
+        }
+    }
+    let elapsed = started.elapsed();
+    let speed = if elapsed.as_secs_f64() > 0.0 { total as f64 / elapsed.as_secs_f64() } else { 0.0 };
+    emit(Event::Verified { bytes: total, elapsed_secs: elapsed.as_secs_f64(), avg_speed_bps: speed });
+    Ok(WindowsVerifyReport { bytes: total, files, elapsed })
+}
+
+/// The first bytes of a file on the FAT volume.
+fn read_small_head<IO: ReadWriteSeek>(root: &fatfs::Dir<'_, IO>, path: &str) -> Result<Vec<u8>> {
+    let mut parts: Vec<&str> = path.split('/').collect();
+    let file = parts.pop().unwrap_or("");
+    let mut dir = root.clone();
+    for p in parts {
+        dir = dir.open_dir(p).map_err(|_| missing(path))?;
+    }
+    let mut f = dir.open_file(file).map_err(|_| missing(path))?;
+    let mut v = vec![0u8; crate::wim::HEADER_LEN];
+    f.read_exact(&mut v).map_err(|e| NyError::from_io(&e, &format!("reading {path} back")))?;
+    Ok(v)
 }
 
 #[cfg(test)]
@@ -630,6 +915,75 @@ mod tests {
         // boot.wim copied verbatim.
         let orig = std::fs::read(d.join("t/sources/boot.wim")).unwrap();
         assert_eq!(std::fs::read(find("boot.wim")).unwrap(), orig);
+    }
+
+
+    fn find_bytes(hay: &[u8], needle: &[u8]) -> Option<usize> {
+        let first = needle[0];
+        let mut from = 0;
+        while let Some(i) = hay[from..].iter().position(|&b| b == first) {
+            let at = from + i;
+            if hay.len() >= at + needle.len() && &hay[at..at + needle.len()] == needle {
+                return Some(at);
+            }
+            from = at + 1;
+        }
+        None
+    }
+
+    #[test]
+    fn a_finished_windows_stick_verifies_and_every_kind_of_damage_is_found() {
+        let Some((d, iso)) = fake_windows_iso("verify") else { return };
+        let _cleanup = Cleanup(d.clone());
+        let img = d.join("stick.img");
+        let opts = WindowsOptions {
+            file_size: Some(200 << 20),
+            part_bytes: 2_400_000, // force splitting
+            unattend: Unattend { bypass_hardware_checks: true },
+            ..Default::default()
+        };
+        let no = || Arc::new(AtomicBool::new(false));
+        make_windows_media(&iso, &Target::file(&img), &opts, no(), &mut |_| {}).unwrap();
+
+        let mut ev = vec![];
+        let rep = verify_windows_media(&iso, &Target::file(&img), &opts, no(), &mut |e| ev.push(e)).unwrap();
+        assert!(rep.files >= 8, "{rep:?}"); // boot files + at least 3 install parts
+        assert!(matches!(ev.last().unwrap(), Event::Verified { .. }));
+        assert!(ev.iter().any(|e| matches!(e, Event::Phase { phase: Phase::Verifying, .. })));
+
+        let original = std::fs::read(&img).unwrap();
+        let flip = |at: usize| {
+            let mut raw = original.clone();
+            raw[at] ^= 0x40;
+            std::fs::write(&img, raw).unwrap();
+            verify_windows_media(&iso, &Target::file(&img), &opts, no(), &mut |_| {}).unwrap_err()
+        };
+        // a file copied from the ISO
+        let boot = std::fs::read(d.join("t/sources/boot.wim")).unwrap();
+        let boot_at = find_bytes(&original, &boot[..64]).expect("boot.wim on the stick");
+        let e = flip(boot_at + 100);
+        assert_eq!(e.kind, ErrorKind::VerifyFailed);
+        assert!(e.message.to_lowercase().contains("boot.wim"), "{}", e.message);
+        // data inside a split part of install.wim (uncompressed payload, so its bytes are visible on the stick)
+        let payload = std::fs::read(d.join("payload/a/f5.bin")).unwrap();
+        // (boot.wim holds the same incompressible bytes, so look beyond it)
+        let after = boot_at + boot.len();
+        let at = after + find_bytes(&original[after..], &payload[..64]).expect("install data on the stick");
+        let e = flip(at + 1000);
+        assert!(e.message.contains("install") && e.message.contains(".swm"), "{}", e.message);
+        // the boot sector
+        let e = flip(100);
+        assert!(e.message.contains("boot sector"), "{}", e.message);
+        // GRUB's core image
+        let e = flip(512 + 10);
+        assert!(e.message.contains("boot code"), "{}", e.message);
+        // untouched again: passes
+        std::fs::write(&img, &original).unwrap();
+        verify_windows_media(&iso, &Target::file(&img), &opts, no(), &mut |_| {}).unwrap();
+        // a stick that is not a Windows installer at all
+        std::fs::write(&img, vec![0u8; 200 << 20]).unwrap();
+        let e = verify_windows_media(&iso, &Target::file(&img), &opts, no(), &mut |_| {}).unwrap_err();
+        assert_eq!(e.kind, ErrorKind::VerifyFailed);
     }
 
     #[test]

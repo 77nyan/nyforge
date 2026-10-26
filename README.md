@@ -14,7 +14,7 @@
 
 | Tool | What it does | Command |
 |---|---|---|
-| **NyFlash** | Writes `.iso` / `.img` files (and `.gz` `.xz` `.bz2` `.zst` `.zip` archives of them) to a USB drive. | `nyforge flash` |
+| **NyFlash** | Writes `.iso` / `.img` files (and `.gz` `.xz` `.bz2` `.zst` `.zip` archives of them) to a USB drive. Turns a Windows ISO into a bootable installer. Can verify the result and check a download's checksum. | `nyforge flash`, `windows`, `verify`, `checksum` |
 | **NyBoot** | Multiboot drive: install once, copy ISOs onto it like files, pick one at boot. Not Ventoy-compatible. | `nyforge boot` |
 | **NyFormat** | Erases and formats USB sticks and SD cards (FAT32, exFAT, FAT16, NTFS, ext2/3/4 where the system allows), checks for bad blocks and fake capacity, restores a drive stuck at a few MB. | `nyforge format` |
 
@@ -101,6 +101,20 @@ root. Manual build: `cargo build --release -p nyforge -p nyforge-gui`; keep both
 
 * **NyFlash**: choose an image (button or drag and drop), choose a drive, **Flash...**, confirm. Real progress, safe stop.
   No drive is ever pre-selected.
+  * **Windows ISO:** recognised automatically. NyForge builds a bootable installer instead of copying the ISO as it is
+    (that would not boot): UEFI (Secure Boot too) and legacy BIOS, an `install.wim` too big for FAT32 is split for you.
+    Options: skip the Windows 11 hardware checks, legacy BIOS on/off. "Write the ISO as it is" is still there.
+    This mode is mainly meant for modified Windows builds such as Tiny10 and Tiny11. For an official Windows install,
+    use Microsoft's own Media Creation Tool; it is the supported way and gets you the newest version.
+    A build that brings its own `autounattend.xml` keeps it. An `install.esd` over 4 GB cannot go on a FAT32 drive
+    (it cannot be split); the app says so before you start.
+  * **Windows writes** go in 1 MiB pieces, and if the stick drops out for a moment and comes back as the very same
+    drive, the write carries on (up to three times). A different drive is never written to.
+  * **Verify (optional, never in the way):** tick *Verify when done* before or while it runs, or press *Verify drive*
+    on the result screen. It reads the drive back, bypassing the system cache, and compares every byte with the image
+    (for a Windows installer: every file, and the boot sector). A failure names the first wrong byte or file.
+  * **Checksum:** the *Checksum* link checks the download against the SHA-256, SHA-1 or MD5 on its web page. A
+    `SHA256SUMS` or `<file>.sha256` next to it is found and used.
 * **NyBoot**: choose a drive, install NyBoot (erases it), then **Add images**. Removing an image deletes only that file;
   **Reinstall** erases the drive. "Update bootloader" is disabled (no in-place update yet). Images are checked when
   added; Windows installers cannot boot from a loop device and NyForge says so.
@@ -117,7 +131,7 @@ root. Manual build: `cargo build --release -p nyforge -p nyforge-gui`; keep both
   **Format!**. A greyed-out filesystem has an **i** button that explains why and how to fix it on your system. Options: **Quick format**, **Check device for bad blocks** (1 to 4 passes), and **Restore full capacity**
   for a drive that shows only a few MB after flashing an ISO. A cancelled flash leaves such a drive; this fixes it.
 * Closing the window during a write asks first, then stops it. Progress and errors are the engine's own; nothing is
-  simulated. There is no "verified" claim, because writes are not read back. Animations follow "reduce motion".
+  simulated. "Verified" appears only when the drive really was read back. Animations follow "reduce motion".
 
 ## Command line
 
@@ -131,7 +145,11 @@ nyforge list                                   # drives you can write to
 nyforge inspect ubuntu.iso                     # what is this image?
 sudo nyforge flash ubuntu.iso /dev/sdb         # write it (asks first)
 sudo nyforge flash raspios.img.xz /dev/sdb /dev/sdc --hostname mypi --user me --ssh --ssh-key ~/.ssh/id_ed25519.pub
-sudo nyforge windows Win11.iso /dev/sdb --bypass-checks
+sudo nyforge flash ubuntu.iso /dev/sdb --verify   # then read the drive back and compare
+sudo nyforge verify ubuntu.iso /dev/sdb         # check a drive later
+nyforge checksum ubuntu.iso --expect SHA256SUMS # or --expect <the hash>; with neither, a checksum file beside it is used
+sudo nyforge windows Win11.iso /dev/sdb --bypass-checks --verify
+sudo nyforge verify Win11.iso /dev/sdb --windows --bypass-checks
 sudo nyforge boot install /dev/sdb             # multiboot drive
 sudo nyforge boot add /dev/sdb *.iso
 nyforge boot check some.iso
@@ -159,7 +177,8 @@ prebuilt by `tools/build-grub-assets.sh`.
 
 * **Linux (x86-64) and Windows 11, real hardware:** flashing, NyBoot, formatting and the desktop app, used by the author on
   real USB sticks. A Windows bug found this way (a cancelled flash broke later writes) is fixed in 0.1.2.
-* **Automatic tests (Linux):** writing, cancellation, decompression, ISO readers, `install.wim` splitting, first-boot
+* **Automatic tests (Linux):** writing, read-back verification (a single flipped bit anywhere is found, also in a
+  Windows installer's files and boot sector), checksums, cancellation, decompression, ISO readers, `install.wim` splitting, first-boot
   files, `nyforge format` (FAT16/32, exFAT, NTFS, ext2/3/4 checked with `fsck`/`e2fsck`/`ntfsfix`/`blkid`; MBR and GPT
   checked with `parted`; fake-capacity detection), QEMU boots of NyBoot (real kernel; ISOs copied in by a file manager
   and by NyForge; BIOS and UEFI) and of a Windows-style stick, and the app under a virtual display.
@@ -174,7 +193,8 @@ prebuilt by `tools/build-grub-assets.sh`.
 
 * NyBoot: no Secure Boot, no persistence, MBR only (drives up to 2 TiB, 512-byte sectors), no in-place update;
   `install.esd` over 4 GiB is unsupported.
-* Writes are not read back to verify (only NyFormat's bad-block / capacity check reads back).
+* Verifying is optional and off by default; it takes about as long as the write. A Windows installer's check covers the
+  files copied from the ISO, the boot sector and GRUB's code, not what Windows' boot manager does with them.
 * `nyforge format` makes FAT16/FAT32/exFAT itself everywhere. ext2/3/4 and NTFS need Linux with `mkfs.ext*` / `mkfs.ntfs`
   (`nyforge doctor` checks); on Windows NTFS is made by Windows; macOS can make neither. Drives over 2 TB default to GPT.
 * Windows 10 or newer. The macOS download is one universal build (its Intel half is only cross-compiled). No Windows ARM64.

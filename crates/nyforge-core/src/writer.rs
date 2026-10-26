@@ -80,7 +80,8 @@ const HEAD_BYTES: u64 = 1 << 20;
 impl Default for WriteOptions {
     fn default() -> Self {
         Self {
-            chunk_size: 4 << 20,
+            // Windows gets 1 MiB: some USB sticks and controllers reset under larger direct writes.
+            chunk_size: if cfg!(windows) { 1 << 20 } else { 4 << 20 },
             queue_depth: 4,
             direct_io: true,
             skip_zeros: true,
@@ -166,7 +167,7 @@ enum ReaderEnd {
     NobodyListening,
 }
 
-fn map_read_error(e: &std::io::Error, at: u64) -> NyError {
+pub(crate) fn map_read_error(e: &std::io::Error, at: u64) -> NyError {
     use std::io::ErrorKind as K;
     match e.kind() {
         K::InvalidData | K::UnexpectedEof => NyError::new(
@@ -292,7 +293,7 @@ fn target_thread(
     // macOS's raw disk node only takes whole sectors, so there it is not optional.
     let want_direct = (opts.direct_io || cfg!(target_os = "macos")) && t.kind == TargetKind::BlockDevice;
     let mut direct = want_direct;
-    let file = match sys::open_target(&t.path, t.kind, direct) {
+    let mut file = match sys::open_target(&t.path, t.kind, direct) {
         Ok(f) => f,
         Err(e) if direct && e.raw_os_error() == Some(22) => {
             // EINVAL: the device does not do direct I/O. Fall back to buffered writes.
@@ -305,6 +306,16 @@ fn target_thread(
         Err(e) => return fail(NyError::from_io(&e, &format!("opening {}", t.display)), 0),
     };
 
+    // A USB stick that resets in the middle of a write (Windows error 433 and friends) is picked up again, but only
+    // when it is the very same drive; at most three times, then the write ends with the original error.
+    let reopen_direct = direct;
+    let mut recover = |attempt: u32, e: &std::io::Error| -> Option<std::io::Result<std::fs::File>> {
+        let was = t.drive.as_ref()?;
+        if t.kind != TargetKind::BlockDevice || attempt >= 3 || cancel.load(Ordering::Relaxed) || !sys::is_device_gone(e) {
+            return None;
+        }
+        Some(sys::reopen_after_dropout(&t.path, was, reopen_direct))
+    };
     let mut written_end = 0u64;
     let mut since_sync = 0u64;
     let mut zero_unsupported = false;
@@ -385,7 +396,7 @@ fn target_thread(
             if holds {
                 held_head.push((chunk.offset, data.to_vec()));
             } else {
-                if let Err(e) = write_all_at(&file, data, chunk.offset) {
+                if let Err(e) = sys::write_all_at_resilient(&mut file, data, chunk.offset, &mut recover) {
                     return fail(NyError::from_io(&e, &what), written_end);
                 }
                 since_sync += n as u64;
@@ -410,7 +421,7 @@ fn target_thread(
     me.state.store(ST_FINISHING, Ordering::SeqCst);
     // The partition table goes in last (see `defer_head`).
     for (off, data) in &held_head {
-        if let Err(e) = write_all_at(&file, data, *off) {
+        if let Err(e) = sys::write_all_at_resilient(&mut file, data, *off, &mut recover) {
             return fail(NyError::from_io(&e, &what), written_end);
         }
     }

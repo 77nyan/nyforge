@@ -27,6 +27,8 @@ pub struct Run {
     pub progress: Option<Progress>,
     pub total_hint: Option<u64>,
     pub finished: Option<(f64, f64)>, // (elapsed, average speed)
+    /// Set when the engine read the drive back and it matched: (elapsed, average speed).
+    pub verified: Option<(f64, f64)>,
     /// Speed and time left as shown to the person: averaged over several seconds and refreshed once a second.
     pub smooth: Smoother,
     pub error: Option<NyError>,
@@ -38,6 +40,8 @@ pub struct Run {
     /// For runs that report success only by ending cleanly (listing, removing).
     needs_finished: bool,
     pub started: std::time::Instant,
+    /// When the read-back pass began (its speed and time left are measured from here).
+    pub verify_started: Option<std::time::Instant>,
 }
 
 impl Run {
@@ -48,6 +52,7 @@ impl Run {
             progress: None,
             total_hint: None,
             finished: None,
+            verified: None,
             smooth: Smoother::default(),
             error: None,
             target_error: None,
@@ -57,6 +62,7 @@ impl Run {
             spawn_failed: None,
             needs_finished,
             started: std::time::Instant::now(),
+            verify_started: None,
         }
     }
 
@@ -68,7 +74,15 @@ impl Run {
             match m {
                 Msg::Event(ev) => match ev {
                     Event::Start { total_bytes, .. } => self.total_hint = total_bytes,
-                    Event::Phase { phase, detail } => self.phase = Some((phase, detail)),
+                    Event::Phase { phase, detail } => {
+                        if phase == Phase::Verifying && !matches!(self.phase, Some((Phase::Verifying, _))) {
+                            // The second pass starts from zero again: do not average it with the first.
+                            self.smooth = Smoother::default();
+                            self.progress = None;
+                            self.verify_started = Some(std::time::Instant::now());
+                        }
+                        self.phase = Some((phase, detail));
+                    }
                     Event::Progress(p) => {
                         self.smooth.feed(p.bytes_done, p.bytes_total.or(self.total_hint));
                         self.progress = Some(p);
@@ -83,6 +97,7 @@ impl Run {
                             self.finished = Some((elapsed_secs, avg_speed_bps));
                         }
                     }
+                    Event::Verified { elapsed_secs, avg_speed_bps, .. } => self.verified = Some((elapsed_secs, avg_speed_bps)),
                     Event::Error { error } => self.error = Some(error),
                     Event::Log { .. } => {}
                 },
@@ -98,6 +113,11 @@ impl Run {
             }
         }
         any
+    }
+
+    /// Is the engine reading the drive back right now?
+    pub fn is_verifying(&self) -> bool {
+        matches!(self.phase, Some((Phase::Verifying, _)))
     }
 
     pub fn is_done(&self) -> bool {
@@ -162,6 +182,7 @@ pub fn title_for(k: ErrorKind) -> String {
         ErrorKind::ImageCorrupt => "Image is damaged",
         ErrorKind::ImageUnsupported => "Image not supported",
         ErrorKind::Network => "Network problem",
+        ErrorKind::VerifyFailed => "Verification failed",
         ErrorKind::Cancelled => "Cancelled",
         ErrorKind::Unsafe => "Refused for safety",
         ErrorKind::InvalidInput => "Cannot continue",

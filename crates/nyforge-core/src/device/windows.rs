@@ -34,6 +34,8 @@ where
 struct WinPart {
     number: Option<u32>,
     size: Option<u64>,
+    /// Where the partition starts on the disk, in bytes (to read what is on it when Windows does not know).
+    offset: Option<u64>,
     letter: Option<String>,
     label: Option<String>,
     fs: Option<String>,
@@ -75,6 +77,12 @@ fn drive_letter(s: Option<String>) -> Option<char> {
 }
 
 pub fn parse_get_disk_json(json: &str) -> std::result::Result<Vec<Drive>, String> {
+    Ok(parse_with_offsets(json)?.into_iter().map(|(d, _)| d).collect())
+}
+
+/// The drives, each with the byte offset of every partition (same order as `Drive::partitions`).
+#[cfg_attr(not(windows), allow(dead_code))]
+fn parse_with_offsets(json: &str) -> std::result::Result<Vec<(Drive, Vec<Option<u64>>)>, String> {
     let json = json.trim().trim_start_matches('\u{feff}');
     if json.is_empty() {
         return Ok(vec![]);
@@ -103,6 +111,7 @@ pub fn parse_get_disk_json(json: &str) -> std::result::Result<Vec<Drive>, String
             } else {
                 Safety::Internal
             };
+            let offsets: Vec<Option<u64>> = d.partitions.iter().map(|p| p.offset).collect();
             let partitions = d
                 .partitions
                 .into_iter()
@@ -115,7 +124,7 @@ pub fn parse_get_disk_json(json: &str) -> std::result::Result<Vec<Drive>, String
                     mountpoints: drive_letter(p.letter).map(|l| vec![format!("{l}:\\")]).unwrap_or_default(),
                 })
                 .collect();
-            Drive {
+            let drive = Drive {
                 path: format!("\\\\.\\PhysicalDrive{}", d.number),
                 vendor: String::new(),
                 model: nonempty(d.name).unwrap_or_default(),
@@ -127,9 +136,34 @@ pub fn parse_get_disk_json(json: &str) -> std::result::Result<Vec<Drive>, String
                 read_only: d.read_only,
                 safety,
                 partitions,
-            }
+            };
+            (drive, offsets)
         })
         .collect())
+}
+
+/// Windows only names the filesystems it can mount (FAT, exFAT, NTFS, ReFS). What is on the other partitions, such as
+/// the ISO 9660 of a hybrid image or the ext4 of a Linux stick, it leaves blank, so look at the partition's first bytes.
+/// `read(disk, offset, len)` returns what it can read (possibly less than `len`) or `None`.
+#[cfg_attr(not(windows), allow(dead_code))]
+fn identify_unknown(drives: &mut [(Drive, Vec<Option<u64>>)], read: &mut dyn FnMut(&str, u32, u64, usize) -> Option<Vec<u8>>) {
+    use super::fsprobe::probe_bytes;
+    for (d, offsets) in drives.iter_mut() {
+        let (path, sector) = (d.path.clone(), d.sector_size);
+        for (p, off) in d.partitions.iter_mut().zip(offsets.iter()) {
+            let (None, Some(off)) = (&p.fstype, off) else { continue };
+            let Some(buf) = read(&path, sector, *off, 0x10400) else { continue };
+            let head = &buf[..buf.len().min(0x8200)];
+            let tail = if buf.len() > 0x10000 { &buf[0x10000..] } else { &[][..] };
+            let info = probe_bytes(head, tail);
+            if info.fstype.is_some() {
+                p.fstype = info.fstype;
+                if p.label.is_none() {
+                    p.label = info.label;
+                }
+            }
+        }
+    }
 }
 
 /// `PhysicalDrive2`, `\\.\PHYSICALDRIVE2` and `\\?\PhysicalDrive2` all mean `\\.\PhysicalDrive2`.
@@ -159,7 +193,7 @@ $out = @(Get-Disk | ForEach-Object {
     $p = $_
     $v = $null
     if ($p.DriveLetter) { $v = Get-Volume -DriveLetter $p.DriveLetter }
-    [pscustomobject]@{ Number=[int]$p.PartitionNumber; Size=[uint64]$p.Size; Letter=[string]$p.DriveLetter; Label=[string]$v.FileSystemLabel; Fs=[string]$v.FileSystem }
+    [pscustomobject]@{ Number=[int]$p.PartitionNumber; Size=[uint64]$p.Size; Offset=[uint64]$p.Offset; Letter=[string]$p.DriveLetter; Label=[string]$v.FileSystemLabel; Fs=[string]$v.FileSystem }
   })
   [pscustomobject]@{ Number=[int]$d.Number; Name=[string]$d.FriendlyName; Size=[uint64]$d.Size; Bus=[string]$d.BusType; IsSystem=[bool]$d.IsSystem; IsBoot=[bool]$d.IsBoot; ReadOnly=[bool]$d.IsReadOnly; Serial=[string]$d.SerialNumber; LogicalSector=[int]$d.LogicalSectorSize; Partitions=$parts }
 })
@@ -181,8 +215,37 @@ pub fn list_drives() -> Result<Vec<Drive>> {
             format!("PowerShell failed while listing drives: {}", String::from_utf8_lossy(&out.stderr).trim()),
         ));
     }
-    parse_get_disk_json(&String::from_utf8_lossy(&out.stdout))
-        .map_err(|e| NyError::other(format!("Could not understand the drive list from Windows: {e}")))
+    let mut drives = parse_with_offsets(&String::from_utf8_lossy(&out.stdout))
+        .map_err(|e| NyError::other(format!("Could not understand the drive list from Windows: {e}")))?;
+    // Needs administrator rights to read a raw disk; without them the partitions simply stay unnamed.
+    identify_unknown(&mut drives, &mut |path, sector, off, len| read_raw(path, off, len, sector));
+    Ok(drives.into_iter().map(|(d, _)| d).collect())
+}
+
+#[cfg(windows)]
+fn read_raw(disk: &str, off: u64, len: usize, sector: u32) -> Option<Vec<u8>> {
+    use std::os::windows::fs::FileExt;
+    use std::os::windows::fs::OpenOptionsExt;
+    const FILE_SHARE_READ_WRITE: u32 = 3;
+    let sector = u64::from(sector.max(512));
+    let f = std::fs::OpenOptions::new().read(true).share_mode(FILE_SHARE_READ_WRITE).open(disk).ok()?;
+    // Raw disks only answer whole sectors at sector-aligned places.
+    let start = off / sector * sector;
+    let want = (off - start + len as u64).div_ceil(sector) * sector;
+    let mut buf = vec![0u8; want as usize];
+    let mut got = 0usize;
+    while got < buf.len() {
+        match f.seek_read(&mut buf[got..], start + got as u64) {
+            Ok(0) | Err(_) => break,
+            Ok(n) => got += n,
+        }
+    }
+    let skip = (off - start) as usize;
+    if got <= skip {
+        return None;
+    }
+    buf.truncate(got);
+    Some(buf.split_off(skip))
 }
 
 #[cfg(test)]
@@ -245,6 +308,40 @@ mod tests {
         assert_eq!(normalize_spec("PhysicalDrive2x"), "PhysicalDrive2x");
         assert_eq!(disk_number("\\\\.\\PhysicalDrive7"), Some(7));
         assert_eq!(disk_number("/dev/sdb"), None);
+    }
+
+    #[test]
+    fn partitions_windows_cannot_name_are_identified_from_their_first_bytes() {
+        // A hybrid ISO written to a USB stick: partition 1 starts at byte 0 and holds an ISO 9660 volume, partition 2
+        // (a FAT EFI image) starts at 1 MiB. Windows names neither; partition 3 is a normal FAT32 it does name.
+        let j = r#"[{"Number":2,"Name":"SanDisk","Size":8000000,"Bus":"USB","LogicalSector":512,"Partitions":[
+            {"Number":1,"Size":1000000,"Offset":0,"Letter":"","Label":"","Fs":""},
+            {"Number":2,"Size":4000,"Offset":1048576,"Letter":"","Label":"","Fs":""},
+            {"Number":3,"Size":4000,"Offset":3000000,"Letter":"E","Label":"DATA","Fs":"FAT32"},
+            {"Number":4,"Size":4000,"Offset":5000000,"Letter":"","Label":"","Fs":""}]}]"#;
+        let mut d = parse_with_offsets(j).unwrap();
+        let mut disk = vec![0u8; 6_000_000];
+        disk[0x8001..0x8006].copy_from_slice(b"CD001");
+        disk[0x8028..0x8028 + 8].copy_from_slice(b"ALPINE  ");
+        let efi = 1_048_576;
+        disk[efi + 0x52..efi + 0x57].copy_from_slice(b"FAT32");
+        disk[efi + 0x47..efi + 0x47 + 11].copy_from_slice(b"EFIBOOT    ");
+        let mut asked = vec![];
+        identify_unknown(&mut d, &mut |_, _, off, len| {
+            asked.push(off);
+            let o = off as usize;
+            Some(disk[o..(o + len).min(disk.len())].to_vec())
+        });
+        let p = &d[0].0.partitions;
+        assert_eq!((p[0].fstype.as_deref(), p[0].label.as_deref()), (Some("iso9660"), Some("ALPINE")));
+        assert_eq!((p[1].fstype.as_deref(), p[1].label.as_deref()), (Some("vfat"), Some("EFIBOOT")));
+        assert_eq!(p[2].fstype.as_deref(), Some("fat32"), "what Windows already named is not touched");
+        assert_eq!(p[3].fstype, None, "blank space stays unrecognised");
+        assert_eq!(asked, vec![0, 1_048_576, 5_000_000], "only unnamed partitions are read");
+        // A disk that cannot be read (no administrator rights) changes nothing.
+        let mut d = parse_with_offsets(j).unwrap();
+        identify_unknown(&mut d, &mut |_, _, _, _| None);
+        assert!(d[0].0.partitions.iter().take(2).all(|p| p.fstype.is_none()));
     }
 
     #[test]

@@ -34,6 +34,8 @@ pub struct WindowsInfo {
     pub uefi_x64: bool,
     pub uefi_arm64: bool,
     pub bios_bootmgr: bool,
+    /// The ISO brings its own `autounattend.xml` (custom builds such as Tiny10/Tiny11 do): it is kept as it is.
+    pub own_unattend: bool,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -178,6 +180,7 @@ pub fn analyze(iso: &IsoImage, size: u64) -> Result<IsoReport> {
             uefi_x64: ex("EFI/BOOT/BOOTX64.EFI"),
             uefi_arm64: ex("EFI/BOOT/BOOTAA64.EFI"),
             bios_bootmgr: ex("bootmgr"),
+            own_unattend: ex("autounattend.xml"),
         };
         if w.exceeds_fat32 {
             notes.push(format!(

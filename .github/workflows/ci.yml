@@ -14,6 +14,19 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - run: cargo build --locked --workspace
       - run: cargo test --locked -p nyforge-core -p nyforge
+      - name: Flash, verify and checksum (files stand in for drives)
+        run: |
+          set -eux
+          head -c 20000000 /dev/urandom > "$RUNNER_TEMP/a.img"
+          ./target/debug/nyforge flash "$RUNNER_TEMP/a.img" "$RUNNER_TEMP/out.img" -y --verify
+          ./target/debug/nyforge verify "$RUNNER_TEMP/a.img" "$RUNNER_TEMP/out.img"
+          # change one byte (to a different value, whatever it was)
+          b=$(dd if="$RUNNER_TEMP/out.img" bs=1 skip=7777777 count=1 2>/dev/null | od -An -tu1 | tr -d ' ')
+          printf "$(printf '\\%03o' $(( (b + 1) % 256 )))" | dd of="$RUNNER_TEMP/out.img" bs=1 seek=7777777 conv=notrunc
+          if ./target/debug/nyforge verify "$RUNNER_TEMP/a.img" "$RUNNER_TEMP/out.img"; then echo "damage was not found"; exit 1; fi
+          sum=$(sha256sum "$RUNNER_TEMP/a.img" | cut -d' ' -f1)
+          ./target/debug/nyforge checksum "$RUNNER_TEMP/a.img" --expect "$sum"
+          if ./target/debug/nyforge checksum "$RUNNER_TEMP/a.img" --expect 0000000000000000000000000000000000000000000000000000000000000000; then echo "wrong checksum accepted"; exit 1; fi
       - name: Format tests (need the checking tools)
         run: |
           cargo test --locked -p nyforge-core usbformat -- --ignored --skip a_real_block_device
@@ -58,7 +71,8 @@ jobs:
           dev=$(hdiutil attach -nomount ram://131072 | awk '{print $1}')   # 64 MiB
           head -c 33554432 /dev/urandom > "$RUNNER_TEMP/test.img"
           sudo ./target/debug/nyforge list --all
-          sudo ./target/debug/nyforge flash "$RUNNER_TEMP/test.img" "$dev" --allow-virtual --allow-internal -y
+          sudo ./target/debug/nyforge flash "$RUNNER_TEMP/test.img" "$dev" --allow-virtual --allow-internal -y --verify
+          sudo ./target/debug/nyforge verify "$RUNNER_TEMP/test.img" "$dev"
           raw=$(echo "$dev" | sed 's#/dev/disk#/dev/rdisk#')
           sudo dd if="$raw" of="$RUNNER_TEMP/back.img" bs=1m count=32
           cmp "$RUNNER_TEMP/test.img" "$RUNNER_TEMP/back.img"
@@ -128,8 +142,10 @@ jobs:
           $bytes = New-Object byte[] 33554432
           (New-Object System.Random 42).NextBytes($bytes)
           [IO.File]::WriteAllBytes($img, $bytes)
-          target\release\nyforge.exe flash $img "\\.\PhysicalDrive$n" --allow-virtual --allow-internal -y
-          if ($LASTEXITCODE -ne 0) { throw "flash failed" }
+          target\release\nyforge.exe flash $img "\\.\PhysicalDrive$n" --allow-virtual --allow-internal -y --verify
+          if ($LASTEXITCODE -ne 0) { throw "flash (with --verify) failed" }
+          target\release\nyforge.exe verify $img "\\.\PhysicalDrive$n"
+          if ($LASTEXITCODE -ne 0) { throw "verify failed" }
           $fs = [IO.File]::Open("\\.\PhysicalDrive$n", 'Open', 'Read', 'ReadWrite')
           $buf = New-Object byte[] 33554432
           $got = 0

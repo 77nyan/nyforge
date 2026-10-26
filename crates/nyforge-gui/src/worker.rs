@@ -53,6 +53,27 @@ impl Job {
     }
 }
 
+impl Job {
+    /// Ask the engine to read the drive back when it has finished writing (the engine honours this until it
+    /// has finished writing). Over standard input this is the byte `v`; with a file-watching engine (macOS) it is
+    /// a second file next to the cancel file.
+    pub fn request_verify(&mut self) {
+        match &mut self.canceller {
+            Canceller::Stdin(Some(s)) => {
+                use std::io::Write;
+                let _ = s.write_all(b"v");
+                let _ = s.flush();
+            }
+            Canceller::File(p) => {
+                let mut v = p.as_os_str().to_owned();
+                v.push(".verify");
+                let _ = std::fs::write(PathBuf::from(v), b"verify");
+            }
+            _ => {}
+        }
+    }
+}
+
 pub fn engine_path() -> PathBuf {
     if let Ok(p) = std::env::var("NYFORGE_BIN") {
         return PathBuf::from(p);

@@ -41,6 +41,8 @@ pub enum Phase {
     Preparing,
     Writing,
     Finalizing,
+    /// Reading the drive back and comparing it with the image.
+    Verifying,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -66,6 +68,12 @@ pub enum Event {
     },
     Finished {
         ok: bool,
+        bytes: u64,
+        elapsed_secs: f64,
+        avg_speed_bps: f64,
+    },
+    /// The drive was read back and holds exactly what it should.
+    Verified {
         bytes: u64,
         elapsed_secs: f64,
         avg_speed_bps: f64,

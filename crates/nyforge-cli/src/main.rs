@@ -8,6 +8,7 @@ mod boot;
 mod format_cmd;
 mod setup;
 mod ui;
+mod verify_cmd;
 mod windows;
 
 use clap::{Args, Parser, Subcommand};
@@ -59,6 +60,10 @@ enum Cmd {
     Setup(setup::SetupCmd),
     /// Make a bootable Windows installer from a Windows ISO (splits install.wim for FAT32)
     Windows(windows::WindowsArgs),
+    /// Read a drive back and check that it holds exactly what was written to it
+    Verify(verify_cmd::VerifyArgs),
+    /// Check a download against its published SHA-256, SHA-1 or MD5
+    Checksum(verify_cmd::ChecksumArgs),
     /// NyBoot: a multiboot drive you copy ISOs onto and boot any of them
     #[command(subcommand)]
     Boot(boot::BootCmd),
@@ -127,6 +132,9 @@ struct FlashArgs {
     /// Chunk size in MiB (default 4)
     #[arg(long, value_name = "MIB")]
     chunk: Option<usize>,
+    /// When the write is done, read the drive back and compare it with the image (needs a local file, not a URL)
+    #[arg(long)]
+    verify: bool,
     #[command(flatten)]
     setup: setup::SetupArgs,
 }
@@ -171,6 +179,8 @@ fn main() -> ExitCode {
         Cmd::Doctor(a) => a.json,
         Cmd::Boot(b) => boot_json(b),
         Cmd::Windows(a) => a.json,
+        Cmd::Verify(a) => a.json,
+        Cmd::Checksum(a) => a.json,
         Cmd::Setup(a) => a.json,
         Cmd::Format(a) => a.json,
     };
@@ -182,6 +192,8 @@ fn main() -> ExitCode {
         Cmd::Doctor(a) => cmd_doctor(a),
         Cmd::Boot(b) => boot::run(b),
         Cmd::Windows(a) => windows::run(a),
+        Cmd::Verify(a) => verify_cmd::run(a),
+        Cmd::Checksum(a) => verify_cmd::run_checksum(a),
         Cmd::Setup(a) => setup::run(a),
         Cmd::Format(a) => format_cmd::run(a),
     };
@@ -295,6 +307,12 @@ pub(crate) fn print_event(ev: &Event) {
 }
 
 static CANCEL_ON_STDIN_CLOSE: AtomicBool = AtomicBool::new(false);
+/// A front end asked, while we were writing, for the drive to be read back afterwards.
+static VERIFY_REQUESTED: AtomicBool = AtomicBool::new(false);
+
+pub(crate) fn verify_requested() -> bool {
+    VERIFY_REQUESTED.load(Ordering::Relaxed)
+}
 static CANCEL_FILE: std::sync::OnceLock<std::path::PathBuf> = std::sync::OnceLock::new();
 
 pub(crate) fn install_ctrlc() -> Arc<AtomicBool> {
@@ -309,7 +327,12 @@ pub(crate) fn install_ctrlc() -> Arc<AtomicBool> {
             loop {
                 match std::io::Read::read(&mut stdin, &mut sink) {
                     Ok(0) | Err(_) => break,
-                    Ok(_) => {}
+                    // The byte `v` means "read the drive back when you are done writing".
+                    Ok(n) => {
+                        if sink[..n].contains(&b'v') {
+                            VERIFY_REQUESTED.store(true, Ordering::SeqCst);
+                        }
+                    }
                 }
             }
             c.store(true, Ordering::SeqCst);
@@ -318,10 +341,16 @@ pub(crate) fn install_ctrlc() -> Arc<AtomicBool> {
     if let Some(path) = CANCEL_FILE.get().cloned() {
         // macOS: the administrator prompt cannot give the window a live pipe to us, so it creates this file instead.
         let c = cancel.clone();
+        let mut verify_file = path.as_os_str().to_owned();
+        verify_file.push(".verify");
+        let verify_file = std::path::PathBuf::from(verify_file);
         std::thread::spawn(move || loop {
             if path.exists() {
                 c.store(true, Ordering::SeqCst);
                 break;
+            }
+            if verify_file.exists() {
+                VERIFY_REQUESTED.store(true, Ordering::SeqCst);
             }
             std::thread::sleep(std::time::Duration::from_millis(150));
         });
@@ -379,6 +408,10 @@ fn cmd_flash(a: FlashArgs) -> Res {
 
     // Check the first-boot options before anything is erased.
     let firstboot = if a.setup.requested() { Some(a.setup.to_firstboot()?) } else { None };
+    if a.verify && image::is_url(&a.image) {
+        return Err(NyError::invalid("--verify needs the image as a file on this computer, not a URL.")
+            .with_hint("Download it first (and check it with `nyforge checksum`), then flash the file."));
+    }
     let source = image::open(&a.image)?;
     let resolved = resolve_all(&a.targets, policy)?;
 
@@ -432,9 +465,16 @@ fn cmd_flash(a: FlashArgs) -> Res {
             renderer.render(&ev);
         }
     };
-    let res = write_image(source, targets, &opts, cancel, &mut emit);
+    let res = write_image(source, targets, &opts, cancel.clone(), &mut emit);
     match res {
         Ok(report) => {
+            if (a.verify || verify_requested()) && report.all_ok() {
+                renderer.finish_line();
+                for t in report.targets.iter().filter(|t| t.ok) {
+                    let Some(tg) = setup_targets.iter().find(|x| x.display == t.target) else { continue };
+                    verify_cmd::verify_after(&a.image, tg, opts.direct_io, json, &mut renderer, cancel.clone())?;
+                }
+            }
             if !json {
                 renderer.finish_line();
                 let ok = report.targets.iter().filter(|t| t.ok).count();
