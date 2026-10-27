@@ -364,7 +364,7 @@ pub fn make_windows_media(
     });
     emit(Event::Phase { phase: Phase::Preparing, detail: "Releasing the drive".into() });
     let _prep = match &target.drive {
-        Some(d) => Some(sys::prepare_device(d, opts.unmount)?),
+        Some(d) => Some(sys::prepare_device_for_erase(d, opts.unmount)?),
         None => None,
     };
     let started = Instant::now();
@@ -373,7 +373,7 @@ pub fn make_windows_media(
         file.set_len(disk_bytes).map_err(|e| NyError::from_io(&e, "sizing the image file"))?;
     }
     let align = sys::block_io_align(target.kind);
-    let whole = FileIo::new(file, 0, (disk_bytes / SECTOR) * SECTOR, align);
+    let whole = FileIo::new(file, 0, (disk_bytes / SECTOR) * SECTOR, align).recovering(&target.path, target.drive.as_ref().filter(|_| target.kind == TargetKind::BlockDevice), sys::Reopen::Rw);
 
     emit(Event::Phase { phase: Phase::Writing, detail: "Clearing the drive".into() });
     whole.zero(0, 1 << 20).map_err(|e| NyError::from_io(&e, "clearing the start of the drive"))?;

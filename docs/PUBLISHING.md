@@ -50,13 +50,13 @@ gh auth status          # should say you are logged in
 
 ## 2. Put your GitHub name in the project
 
-The files contain the placeholder `77nyan` where your GitHub user name (or organization) belongs.
+The files contain the placeholder `OWNER` where your GitHub user name (or organization) belongs.
 Replace it once (here `yourname` is your GitHub user name):
 
 ```sh
 cd path/to/nyforge
-grep -rn 77nyan --exclude-dir=target --exclude-dir=.git .     # see where it is used
-sed -i 's#77nyan#yourname#g' Cargo.toml README.md
+grep -rn OWNER --exclude-dir=target --exclude-dir=.git .     # see where it is used
+sed -i 's#OWNER#yourname#g' Cargo.toml README.md
 ```
 
 ## 3. Check that it builds

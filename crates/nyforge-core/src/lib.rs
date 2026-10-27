@@ -16,6 +16,7 @@ pub mod winmedia;
 pub mod sys;
 pub mod usbformat;
 pub mod verify;
+pub mod winnative;
 pub mod writer;
 
 pub use error::{ErrorKind, NyError, Result};

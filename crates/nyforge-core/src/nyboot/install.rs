@@ -86,7 +86,7 @@ pub fn install(target: &Target, opts: &InstallOptions, cancel: Arc<AtomicBool>, 
     });
     emit(Event::Phase { phase: Phase::Preparing, detail: "Releasing the drive".into() });
     let _prep = match &target.drive {
-        Some(d) => Some(sys::prepare_device(d, opts.unmount)?),
+        Some(d) => Some(sys::prepare_device_for_erase(d, opts.unmount)?),
         None => None,
     };
 
@@ -95,7 +95,7 @@ pub fn install(target: &Target, opts: &InstallOptions, cancel: Arc<AtomicBool>, 
         file.set_len(disk_bytes).map_err(|e| NyError::from_io(&e, "sizing the image file"))?;
     }
     let align = sys::block_io_align(target.kind);
-    let whole = FileIo::new(file, 0, layout.disk_sectors * SECTOR, align);
+    let whole = FileIo::new(file, 0, layout.disk_sectors * SECTOR, align).recovering(&target.path, target.drive.as_ref().filter(|_| target.kind == TargetKind::BlockDevice), sys::Reopen::Rw);
 
     emit(Event::Phase { phase: Phase::Writing, detail: "Writing the partition table and boot code".into() });
     // Old tables, boot sectors and the old backup GPT must not survive.

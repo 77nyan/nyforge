@@ -1695,7 +1695,7 @@ dependencies = [
 
 [[package]]
 name = "nyforge"
-version = "0.1.5"
+version = "0.1.6"
 dependencies = [
  "anyhow",
  "clap",
@@ -1708,7 +1708,7 @@ dependencies = [
 
 [[package]]
 name = "nyforge-core"
-version = "0.1.5"
+version = "0.1.6"
 dependencies = [
  "bzip2",
  "crc32fast",
@@ -1734,7 +1734,7 @@ dependencies = [
 
 [[package]]
 name = "nyforge-gui"
-version = "0.1.5"
+version = "0.1.6"
 dependencies = [
  "eframe",
  "embed-resource",

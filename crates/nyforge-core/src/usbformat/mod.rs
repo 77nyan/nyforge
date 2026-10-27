@@ -24,6 +24,7 @@ use crate::format::{human_size, round_up};
 use crate::nyboot::io::{FileIo, Io};
 use crate::progress::{Event, Phase, Progress, SpeedMeter, TargetProgress, TargetState};
 use crate::sys::{self, TargetKind};
+use crate::winnative;
 use crate::writer::Target;
 use capacity::{CapacityReport, CapacityTest};
 use serde::{Deserialize, Serialize};
@@ -231,6 +232,32 @@ impl FromStr for PartSpec {
     }
 }
 
+/// Who does the formatting on Windows.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Engine {
+    /// Windows' own tools for a plain quick format (they are the most compatible with unusual sticks), NyForge's
+    /// own writer for everything else and whenever Windows' tools do not manage. Elsewhere: NyForge's own writer.
+    #[default]
+    Auto,
+    /// Windows' own tools only: fails if the request is something they cannot do.
+    Windows,
+    /// NyForge's own writer only.
+    Own,
+}
+
+impl FromStr for Engine {
+    type Err = String;
+    fn from_str(s: &str) -> std::result::Result<Self, String> {
+        match s.trim().to_ascii_lowercase().as_str() {
+            "auto" => Ok(Engine::Auto),
+            "windows" | "native" | "system" => Ok(Engine::Windows),
+            "own" | "raw" | "nyforge" => Ok(Engine::Own),
+            other => Err(format!("\"{other}\" is not an engine (auto, windows, own).")),
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct FormatOptions {
     pub parts: Vec<PartSpec>,
@@ -248,6 +275,8 @@ pub struct FormatOptions {
     pub unmount: bool,
     /// Owner (uid, gid) of an ext4 root directory; otherwise only root could write to the stick.
     pub owner: Option<(u32, u32)>,
+    /// Windows only: who does the formatting (see [`Engine`]).
+    pub engine: Engine,
 }
 
 impl Default for FormatOptions {
@@ -263,6 +292,7 @@ impl Default for FormatOptions {
             file_size: None,
             unmount: true,
             owner: None,
+            engine: Engine::Auto,
         }
     }
 }
@@ -598,9 +628,57 @@ fn format_impl(target: &Target, opts: &FormatOptions, cancel: Arc<AtomicBool>, e
         total_bytes: Some(claimed),
         targets: vec![target.display.clone()],
     });
+    // Windows: its own tools first for a plain quick format. They are what a "format" button there uses, and they
+    // work on sticks that drop off the bus when a program writes to the raw disk.
+    let mut early_notes: Vec<String> = vec![];
+    if cfg!(windows) && target.kind == TargetKind::BlockDevice && opts.engine != Engine::Own {
+        if let Some(d) = &target.drive {
+            match winnative::eligible(opts, &plan) {
+                Ok(mut parts) => {
+                    for (np, l) in parts.iter_mut().zip(&labels) {
+                        np.label = l.clone();
+                    }
+                    rep.phase(Phase::Writing, "Formatting with Windows' own tools");
+                    match winnative::format_disk(d, opts.scheme, &parts, &cancel) {
+                        Ok(()) => {
+                            let elapsed = started.elapsed().as_secs_f64();
+                            (rep.emit)(Event::TargetFinished { target: target.display.clone(), ok: true, bytes: claimed, error: None });
+                            (rep.emit)(Event::Finished { ok: true, bytes: claimed, elapsed_secs: elapsed, avg_speed_bps: 0.0 });
+                            return Ok(FormatReport {
+                                target: target.display.clone(),
+                                scheme: opts.scheme,
+                                disk_bytes: claimed,
+                                usable_bytes: claimed,
+                                partitions: plan
+                                    .iter()
+                                    .zip(&labels)
+                                    .map(|(p, l)| PartitionReport { number: p.number, start_bytes: p.start * SECTOR, size_bytes: p.bytes(), fs: p.spec.fs, label: l.clone() })
+                                    .collect(),
+                                wipe: opts.wipe,
+                                capacity: None,
+                                elapsed_secs: elapsed,
+                                notes: vec!["Formatted with Windows' own tools.".into()],
+                            });
+                        }
+                        Err(e) if e.kind == ErrorKind::Cancelled => return Err(e),
+                        Err(e) if opts.engine == Engine::Windows => return Err(e),
+                        Err(e) => {
+                            rep.log(format!("Windows' own tools did not manage ({}); trying NyForge's own writer.", e.message));
+                            early_notes.push("Windows' own tools could not format this drive, so NyForge's own writer did.".into());
+                        }
+                    }
+                }
+                Err(why) if opts.engine == Engine::Windows => {
+                    return Err(NyError::invalid(format!("Windows' own tools cannot do this: {why}.")).with_hint("Leave out --engine windows to let NyForge write it itself."));
+                }
+                Err(_) => {}
+            }
+        }
+    }
+
     rep.phase(Phase::Preparing, "Releasing the drive");
     let _prep = match &target.drive {
-        Some(d) => Some(sys::prepare_device(d, opts.unmount)?),
+        Some(d) => Some(sys::prepare_device_for_erase(d, opts.unmount)?),
         None => None,
     };
     let file = match target.kind {
@@ -612,8 +690,8 @@ fn format_impl(target: &Target, opts: &FormatOptions, cancel: Arc<AtomicBool>, e
         file.set_len(claimed).map_err(|e| io_err(e, "sizing the image file"))?;
     }
     let align = if target.kind == TargetKind::BlockDevice { 4096 } else { 1 }; // O_DIRECT, NO_BUFFERING and /dev/rdisk all want whole sectors
-    let whole = FileIo::new(file, 0, (claimed / SECTOR) * SECTOR, align);
-    let mut notes = vec![];
+    let whole = FileIo::new(file, 0, (claimed / SECTOR) * SECTOR, align).recovering(&target.path, target.drive.as_ref().filter(|_| target.kind == TargetKind::BlockDevice), sys::Reopen::RwDirect);
+    let mut notes = early_notes;
 
     let result = (|| -> Result<(Option<CapacityReport>, u64)> {
         // 3a. Is the drive what it says it is?
@@ -843,7 +921,7 @@ fn wipe_all(io: &FileIo, kind: Wipe, cancel: &AtomicBool, rep: &mut Reporter) ->
         let mut done = false;
         if zeroout_works && n % 512 == 0 && off % 512 == 0 {
             // The drive's own "write zeroes" command, when it has one: no data crosses the cable.
-            done = sys::zero_range(io.file(), off, n);
+            done = sys::zero_range(&io.file(), off, n);
             zeroout_works = done;
         }
         if !done {

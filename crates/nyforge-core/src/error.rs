@@ -169,7 +169,7 @@ impl NyError {
                     21 | 1167 | 55 => (
                         ErrorKind::DeviceGone,
                         format!("The drive disappeared while {what}."),
-                        Some("Reconnect it (try a different port) and start again."),
+                        Some("The stick dropped off the USB bus. Plug it straight into the computer (no hub), try another port, and turn off USB selective suspend (Power Options > Change plan settings > Advanced > USB settings). Then start again."),
                     ),
                     23 | 1117 | 121 | 483 => (
                         ErrorKind::Hardware,

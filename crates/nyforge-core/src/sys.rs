@@ -12,6 +12,8 @@ use crate::error::{ErrorKind, NyError, Result};
 use std::fs::{File, OpenOptions};
 use std::io;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+use std::sync::Arc;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TargetKind {
@@ -25,6 +27,45 @@ pub struct DevicePrep {
     #[allow(dead_code)]
     pub(crate) guards: Vec<File>,
     pub unmounted: Vec<String>,
+}
+
+/// `prepare_device` for a job that erases the whole drive anyway (flashing, formatting, NyBoot and Windows installs).
+/// On Windows it first asks Windows itself to clean the disk (what balenaEtcher does), so the raw writes that follow
+/// do not meet a live partition table or mounted volumes. If that does not work the job goes on as it always did.
+pub fn prepare_device_for_erase(drive: &Drive, unmount: bool) -> Result<DevicePrep> {
+    if cfg!(windows) && unmount && crate::winnative::may_clean(drive) {
+        let never = AtomicBool::new(false);
+        wake_drive(Path::new(&drive.path));
+        if crate::winnative::clean_disk(drive, &never).is_ok() {
+            // The partitions are gone now: nothing is left to lock or dismount by drive letter.
+            let mut cleaned = drive.clone();
+            cleaned.partitions.clear();
+            let prep = prepare_device(&cleaned, unmount);
+            wake_drive(Path::new(&drive.path));
+            return prep;
+        }
+    }
+    let prep = prepare_device(drive, unmount);
+    wake_drive(Path::new(&drive.path));
+    prep
+}
+
+/// Windows: read the first sector, trying for a few seconds, so that a stick that went to sleep while NyForge was
+/// getting ready (USB selective suspend) is awake, and one that is re-appearing has time to finish, before the
+/// first write. The first raw write after a pause was where drives were seen to drop off the bus. Never an error.
+pub fn wake_drive(path: &Path) {
+    if !cfg!(windows) {
+        return;
+    }
+    for i in 0..10u64 {
+        if let Ok(f) = imp::open_read(path, TargetKind::BlockDevice, true) {
+            let mut b = crate::alignedbuf::AlignedBuf::new(4096);
+            if read_exact_at(&f, &mut b.as_mut_slice()[..4096], 0).is_ok() {
+                return;
+            }
+        }
+        std::thread::sleep(std::time::Duration::from_millis(300 + 100 * i));
+    }
 }
 
 // ------------------------------------------------------------------- pure helpers
@@ -113,33 +154,52 @@ pub fn same_drive(a: &crate::device::Drive, b: &crate::device::Drive) -> bool {
 }
 
 /// Write `data` at `off`. When that fails because the drive dropped out, `recover` may hand back a fresh handle to
-/// the same drive (`attempt` counts from 0); the write then goes on from the same place with it. `recover` returns
-/// `None` to give up, and the original error is reported.
+/// the same drive; the write then goes on from the same place with it, in smaller requests (`max_io` is halved, to
+/// 32 KiB at the least, and stays that way). Without a recovery, or when it gives up, the error is returned.
 pub fn write_all_at_resilient(
     file: &mut File,
     data: &[u8],
     off: u64,
-    recover: &mut dyn FnMut(u32, &io::Error) -> Option<io::Result<File>>,
+    recover: Option<&(dyn Fn(u32, &io::Error) -> Option<io::Result<File>> + Send + Sync)>,
+    max_io: &mut usize,
 ) -> io::Result<()> {
+    let mut done = 0usize;
     let mut attempt = 0u32;
-    loop {
-        match write_all_at(file, data, off) {
-            Ok(()) => return Ok(()),
-            Err(e) => match recover(attempt, &e) {
-                Some(Ok(f)) => {
-                    *file = f;
-                    attempt += 1;
+    while done < data.len() {
+        let n = (data.len() - done).min((*max_io).max(32 << 10));
+        match write_all_at(file, &data[done..done + n], off + done as u64) {
+            Ok(()) => done += n,
+            Err(e) => {
+                let Some(rec) = recover else { return Err(e) };
+                match rec(attempt, &e) {
+                    Some(Ok(f)) => {
+                        *file = f;
+                        attempt += 1;
+                        *max_io = (n / 2).max(32 << 10);
+                    }
+                    Some(Err(e2)) => return Err(e2),
+                    None => return Err(e),
                 }
-                Some(Err(e2)) => return Err(e2),
-                None => return Err(e),
-            },
+            }
         }
     }
+    Ok(())
+}
+
+/// How a drive is opened again after it dropped out: the same way it was opened the first time.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Reopen {
+    /// `open_target` (flashing); `true` = uncached.
+    Target(bool),
+    /// `open_rw` (NyBoot, the Windows installer).
+    Rw,
+    /// `open_rw_direct` (NyFormat).
+    RwDirect,
 }
 
 /// Windows: wait for a drive that dropped out to come back and open it again, but only when it is the same drive.
 /// Anywhere else, or if it does not return in time, this fails and the write ends with the original error.
-pub fn reopen_after_dropout(path: &Path, was: &crate::device::Drive, direct: bool) -> io::Result<File> {
+pub fn reopen_after_dropout(path: &Path, was: &crate::device::Drive, how: Reopen) -> io::Result<File> {
     #[cfg(windows)]
     {
         use crate::device::{resolve_target, ResolvedTarget, TargetPolicy};
@@ -152,7 +212,12 @@ pub fn reopen_after_dropout(path: &Path, was: &crate::device::Drive, direct: boo
             if !same_drive(was, &now) {
                 return Err(io::Error::other("The drive that came back is not the one that was being written."));
             }
-            if let Ok(f) = imp::open_target(path, TargetKind::BlockDevice, direct) {
+            let opened = match how {
+                Reopen::Target(direct) => imp::open_target(path, TargetKind::BlockDevice, direct),
+                Reopen::Rw => imp::open_rw(path, true),
+                Reopen::RwDirect => imp::open_rw_direct(path),
+            };
+            if let Ok(f) = opened {
                 return Ok(f);
             }
         }
@@ -160,9 +225,24 @@ pub fn reopen_after_dropout(path: &Path, was: &crate::device::Drive, direct: boo
     }
     #[cfg(not(windows))]
     {
-        let _ = (path, was, direct);
+        let _ = (path, was, how);
         Err(io::Error::other("A drive that dropped out cannot be picked up again here."))
     }
+}
+
+/// The recovery to hand to a writer or a `FileIo`: when the drive drops out, pick it up again (same drive only),
+/// at most three times for one request and six times in all.
+pub fn drive_recovery(path: PathBuf, drive: crate::device::Drive, how: Reopen, cancel: Option<Arc<AtomicBool>>) -> crate::nyboot::io::Recovery {
+    let total = Arc::new(AtomicU32::new(0));
+    Arc::new(move |attempt: u32, e: &io::Error| {
+        if !is_device_gone(e) || attempt >= 3 || cancel.as_ref().is_some_and(|c| c.load(Ordering::Relaxed)) {
+            return None;
+        }
+        if total.fetch_add(1, Ordering::SeqCst) >= 6 {
+            return None;
+        }
+        Some(reopen_after_dropout(&path, &drive, how))
+    })
 }
 
 // ------------------------------------------------------------------- positional I/O
@@ -746,25 +826,35 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("nyforge-resil-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("d.img");
-        std::fs::write(&path, vec![0u8; 8192]).unwrap();
+        std::fs::write(&path, vec![0u8; 1 << 20]).unwrap();
         // A handle that cannot be written to stands in for a drive that dropped out.
         let mut file = std::fs::File::open(&path).unwrap();
         let p2 = path.clone();
-        let mut calls = vec![];
-        let r = write_all_at_resilient(&mut file, b"HELLO", 4096, &mut |attempt, _e| {
-            calls.push(attempt);
+        let calls = std::sync::Mutex::new(vec![]);
+        let rec = move |attempt: u32, _e: &io::Error| -> Option<io::Result<File>> {
+            calls.lock().unwrap().push(attempt);
             Some(std::fs::OpenOptions::new().write(true).open(&p2))
-        });
+        };
+        let mut max_io = usize::MAX;
+        let data = vec![7u8; 256 << 10];
+        let r = write_all_at_resilient(&mut file, &data, 4096, Some(&rec), &mut max_io);
         assert!(r.is_ok(), "{r:?}");
-        assert_eq!(calls, vec![0], "recovered once, then the write went through");
-        assert_eq!(&std::fs::read(&path).unwrap()[4096..4101], b"HELLO");
+        assert_eq!(max_io, 128 << 10, "after a recovery the requests are half as big");
+        let back = std::fs::read(&path).unwrap();
+        assert!(back[4096..4096 + (256 << 10)].iter().all(|&b| b == 7), "all of it was written, in pieces");
+        assert_eq!(back[4095], 0);
 
         // Recovery says no: the original error comes out.
         let mut ro = std::fs::File::open(&path).unwrap();
-        assert!(write_all_at_resilient(&mut ro, b"X", 0, &mut |_, _| None).is_err());
+        let none = |_: u32, _: &io::Error| -> Option<io::Result<File>> { None };
+        assert!(write_all_at_resilient(&mut ro, b"X", 0, Some(&none), &mut usize::MAX.clone()).is_err());
+        // No recovery at all: the same.
+        let mut ro = std::fs::File::open(&path).unwrap();
+        assert!(write_all_at_resilient(&mut ro, b"X", 0, None, &mut usize::MAX.clone()).is_err());
         // Recovery fails: its error comes out.
         let mut ro = std::fs::File::open(&path).unwrap();
-        let e = write_all_at_resilient(&mut ro, b"X", 0, &mut |_, _| Some(Err(io::Error::other("gone")))).unwrap_err();
+        let bad = |_: u32, _: &io::Error| -> Option<io::Result<File>> { Some(Err(io::Error::other("gone"))) };
+        let e = write_all_at_resilient(&mut ro, b"X", 0, Some(&bad), &mut usize::MAX.clone()).unwrap_err();
         assert_eq!(e.to_string(), "gone");
         std::fs::remove_dir_all(&dir).ok();
     }

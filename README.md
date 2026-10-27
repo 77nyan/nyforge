@@ -108,8 +108,9 @@ optional (ext2/3/4 and NTFS formatting). Writing asks for your password through 
     failure names the first wrong byte or file.
   * **Checksum:** the *Checksum* link checks a download against a SHA-256, SHA-1 or MD5. A `SHA256SUMS` or
     `<file>.sha256` next to it is used automatically.
-  * On Windows, writes go in 1 MiB pieces; if the stick drops out and comes back as the very same drive, the write
-    carries on (up to three times). A different drive is never written to.
+  * On Windows, NyForge first asks Windows to clean the drive (as balenaEtcher does) and wakes it before the first write.
+    Writes go in pieces of at most 1 MiB; if the stick drops off the USB bus and comes back as the very same drive,
+    the write carries on in smaller pieces (up to three times). A different drive is never written to.
 * **NyBoot**: choose a drive, install NyBoot (erases it), then **Add images**, or copy `.iso` files onto the big
   `NYBOOT` (exFAT) partition with your file manager. They show up in the boot menu next start. Images are checked when
   added. Unknown ISOs get a generic start (kernel + initrd found on the image) or use their own `grub.cfg`. For an
@@ -117,7 +118,9 @@ optional (ext2/3/4 and NTFS formatting). Writing asks for your password through 
   options, e.g. `set nb_params="nomodeset"`.
 * **NyFormat**: choose a drive, a filesystem (only ones this system can make; an **i** button explains a greyed-out
   one), a label and cluster size, then **Format!**. Options: **Quick format**, **Check device for bad blocks**, and
-  **Restore full capacity** for a drive that shows only a few MB after flashing an ISO.
+  **Restore full capacity** for a drive that shows only a few MB after flashing an ISO. On Windows a plain quick
+  format is done by Windows' own tools (diskpart), which also revive sticks that drop off the bus under raw writes;
+  if they cannot, NyForge's own writer takes over (`--engine windows|own|auto` on the command line).
 * Closing the window during a write asks first, then stops it. Progress and errors are the engine's own; "Verified"
   appears only when the drive really was read back.
 
@@ -172,6 +175,9 @@ nyforge doctor                                 # does this machine have what NyF
   sector and GRUB code, not what Windows' boot manager does with them.
 * ext2/3/4 and NTFS formatting need Linux with `mkfs.ext*` / `mkfs.ntfs`; on Windows NTFS is made by Windows; macOS can
   make neither. Drives over 2 TB default to GPT.
+* Some USB sticks drop off the bus under raw writes on some Windows setups ("Drive disappeared", error 433). Plug the
+  stick straight into the computer (no hub), try another port, and turn off *USB selective suspend* in Power Options.
+  NyFormat can usually repair a stick left half-written.
 * Windows 10 or newer; no Windows ARM64. macOS and Windows builds are not code-signed.
 
 ## Contributing and publishing

@@ -307,15 +307,12 @@ fn target_thread(
     };
 
     // A USB stick that resets in the middle of a write (Windows error 433 and friends) is picked up again, but only
-    // when it is the very same drive; at most three times, then the write ends with the original error.
-    let reopen_direct = direct;
-    let mut recover = |attempt: u32, e: &std::io::Error| -> Option<std::io::Result<std::fs::File>> {
-        let was = t.drive.as_ref()?;
-        if t.kind != TargetKind::BlockDevice || attempt >= 3 || cancel.load(Ordering::Relaxed) || !sys::is_device_gone(e) {
-            return None;
-        }
-        Some(sys::reopen_after_dropout(&t.path, was, reopen_direct))
+    // when it is the very same drive (see `sys::drive_recovery`); after that, smaller requests are used.
+    let recovery: Option<crate::nyboot::io::Recovery> = match (&t.drive, t.kind) {
+        (Some(d), TargetKind::BlockDevice) => Some(sys::drive_recovery(t.path.clone(), d.clone(), sys::Reopen::Target(direct), None)),
+        _ => None,
     };
+    let mut max_io = usize::MAX;
     let mut written_end = 0u64;
     let mut since_sync = 0u64;
     let mut zero_unsupported = false;
@@ -396,7 +393,7 @@ fn target_thread(
             if holds {
                 held_head.push((chunk.offset, data.to_vec()));
             } else {
-                if let Err(e) = sys::write_all_at_resilient(&mut file, data, chunk.offset, &mut recover) {
+                if let Err(e) = sys::write_all_at_resilient(&mut file, data, chunk.offset, recovery.as_deref(), &mut max_io) {
                     return fail(NyError::from_io(&e, &what), written_end);
                 }
                 since_sync += n as u64;
@@ -421,7 +418,7 @@ fn target_thread(
     me.state.store(ST_FINISHING, Ordering::SeqCst);
     // The partition table goes in last (see `defer_head`).
     for (off, data) in &held_head {
-        if let Err(e) = sys::write_all_at_resilient(&mut file, data, *off, &mut recover) {
+        if let Err(e) = sys::write_all_at_resilient(&mut file, data, *off, recovery.as_deref(), &mut max_io) {
             return fail(NyError::from_io(&e, &what), written_end);
         }
     }
@@ -519,7 +516,7 @@ pub fn write_image(
     let mut _preps = Vec::new();
     for t in &targets {
         if let Some(d) = &t.drive {
-            let prep = sys::prepare_device(d, opts.unmount)?;
+            let prep = sys::prepare_device_for_erase(d, opts.unmount)?;
             if !prep.unmounted.is_empty() {
                 emit(Event::Log { message: format!("Unmounted {} from {}", prep.unmounted.join(", "), d.path) });
             }

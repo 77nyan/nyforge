@@ -61,6 +61,10 @@ pub struct FormatArgs {
     /// ext4: who owns the top folder, as UID:GID (default: the user who ran sudo)
     #[arg(long, value_name = "UID:GID")]
     pub owner: Option<String>,
+    /// Windows: who formats. auto (default): Windows' own tools for a plain quick format, NyForge's writer otherwise
+    /// and whenever Windows' tools do not manage; windows: only Windows' tools; own: only NyForge's writer
+    #[arg(long, value_name = "WHO", default_value = "auto")]
+    pub engine: String,
     /// Do not ask for confirmation
     #[arg(short = 'y', long)]
     pub yes: bool,
@@ -202,7 +206,8 @@ pub fn run(a: FormatArgs) -> Res {
     if a.passes > 1 && capacity_test != CapacityTest::Full {
         return bad("--passes needs --check-bad-blocks (or --test-capacity full).".to_string());
     }
-    let opts = FormatOptions { passes: a.passes, parts, scheme, wipe, capacity_test, fit_real_capacity: a.fit_real_capacity, reserve_bytes, file_size, unmount: true, owner };
+    let engine: usbformat::Engine = a.engine.parse().map_err(NyError::invalid)?;
+    let opts = FormatOptions { passes: a.passes, parts, scheme, wipe, capacity_test, fit_real_capacity: a.fit_real_capacity, reserve_bytes, file_size, unmount: true, owner, engine };
 
     // ---- confirm
     if let Some(d) = &target.drive {
