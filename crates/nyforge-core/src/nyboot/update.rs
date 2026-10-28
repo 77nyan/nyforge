@@ -217,11 +217,10 @@ mod tests {
         let before = std::fs::read(&img).unwrap();
         let (ds, dl, es, el) = find_layout(&before[..512]).unwrap();
         {
-            use std::os::unix::fs::FileExt;
             let f = std::fs::OpenOptions::new().write(true).open(&img).unwrap();
-            f.write_all_at(&[0xAA; 440], 0).unwrap();
-            f.write_all_at(&vec![0xBB; 4096], 512).unwrap();
-            f.write_all_at(&vec![0u8; 4096], es * SECTOR).unwrap(); // the boot partition's first sectors
+            crate::sys::write_all_at(&f, &[0xAA; 440], 0).unwrap();
+            crate::sys::write_all_at(&f, &vec![0xBB; 4096], 512).unwrap();
+            crate::sys::write_all_at(&f, &vec![0u8; 4096], es * SECTOR).unwrap(); // the boot partition's first sectors
         }
         assert!(installed_version(&Target::file(&img)).is_err() || installed_version(&Target::file(&img)).unwrap().is_none());
         // With the boot sector gone it must refuse rather than guess.
@@ -229,9 +228,8 @@ mod tests {
         assert!(r.is_err(), "a damaged boot partition has no marker and must not be rewritten");
         // Put the damaged ESP back from before and try again: only the boot code is old now.
         {
-            use std::os::unix::fs::FileExt;
             let f = std::fs::OpenOptions::new().write(true).open(&img).unwrap();
-            f.write_all_at(&before[(es * SECTOR) as usize..(es * SECTOR) as usize + 4096], es * SECTOR).unwrap();
+            crate::sys::write_all_at(&f, &before[(es * SECTOR) as usize..(es * SECTOR) as usize + 4096], es * SECTOR).unwrap();
         }
         let rep = update(&Target::file(&img), true, flag(), &mut |_| {}).unwrap();
         assert_eq!(rep.to, assets::VERSION);

@@ -1118,6 +1118,10 @@ mod tests {
         assert!(!needs_split(false, 2_400_000, 1_000_000));
     }
 
+    // Uses loop devices and mount, so it only exists on Unix.
+    #[cfg(unix)]
+    // Uses loop devices and mount, so it only exists on Unix.
+    #[cfg(unix)]
     #[test]
     fn builds_and_verifies_an_ntfs_uefi_ntfs_stick_in_an_image_file() {
         // Needs root, a loop device, mkntfs and ntfs-3g: skipped where they are missing.

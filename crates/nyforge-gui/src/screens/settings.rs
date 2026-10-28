@@ -56,11 +56,38 @@ pub fn ui(ui: &mut Ui, sh: &mut Shell) {
     });
     ui.add_space(14.0);
     ui.vertical_centered(|ui| ui.label(small_muted("Your choices are saved automatically.")));
+    ui.add_space(14.0);
+    version_badge(ui);
     ui.add_space(10.0);
 
     if sh.settings != before {
         sh.settings.save();
     }
+}
+
+/// A small, quiet "NyForge v0.1.8" label at the bottom: which version of the program is running.
+fn version_badge(ui: &mut Ui) {
+    let name = "NyForge";
+    let version = format!("v{}", env!("CARGO_PKG_VERSION"));
+    let name_font = FontId::new(12.5, semibold());
+    let ver_font = FontId::new(12.5, FontId::proportional(12.5).family);
+    let (name_w, ver_w) = ui.fonts(|f| (f.layout_no_wrap(name.into(), name_font.clone(), TEXT).size().x, f.layout_no_wrap(version.clone(), ver_font.clone(), TEXT).size().x));
+    let (pad, dot, gap) = (14.0, 6.0, 8.0);
+    let size = vec2(pad * 2.0 + dot + gap + name_w + gap + 1.0 + gap + ver_w, 28.0);
+    let (rect, resp) = ui.allocate_exact_size(vec2(ui.available_width(), size.y), Sense::hover());
+    let pill = Rect::from_center_size(rect.center(), size);
+    let p = ui.painter();
+    p.rect(pill, CornerRadius::same(14), with_alpha(FIELD, 120), Stroke::new(1.0_f32, with_alpha(BORDER, 140)), StrokeKind::Inside);
+    let y = pill.center().y;
+    let mut x = pill.left() + pad;
+    p.circle_filled(pos2(x + dot / 2.0, y), dot / 2.0, ACCENT);
+    x += dot + gap;
+    p.text(pos2(x, y), egui::Align2::LEFT_CENTER, name, name_font, TEXT);
+    x += name_w + gap;
+    p.line_segment([pos2(x, y - 7.0), pos2(x, y + 7.0)], Stroke::new(1.0_f32, with_alpha(BORDER_HI, 160)));
+    x += 1.0 + gap;
+    p.text(pos2(x, y), egui::Align2::LEFT_CENTER, &version, ver_font, MUTED);
+    resp.widget_info(|| WidgetInfo::labeled(WidgetType::Label, true, format!("{name} version {}", env!("CARGO_PKG_VERSION"))));
 }
 
 // ------------------------------------------------------------------ the tiles
