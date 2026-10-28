@@ -29,11 +29,15 @@ This is a **huge update**: the biggest one so far. It adds **one new optional to
 - Multi-pass wipe with read-back check, and the drive can be ejected when it is done.
 - A shorter, clearer description on the home screen.
 
+### Platforms
+- **macOS is not available.** NyForge is for Linux and Windows. There is no macOS download, and the automatic tests and releases no longer build for it.
+
 ### The app
 - **Settings** behind a small cog at the top right of the window: put the tools of the start screen in your own order (drag them, or use the arrows) and switch the optional **NyTest** on. NyTest is off by default, so the start screen shows NyFlash, NyBoot and NyFormat; once it is on it is the fourth tool. Everything is saved automatically.
 - **One start screen, no pages.**
 - New look and logo, smoother animations, better scaling.
+- **Fixed choppy animations.** The frame limiter counted its own sleep as work, so after the first animation it slowed the app down to about 30 frames a second on any computer. Hovering and moving now run at the full speed of the screen again (up to about 120 frames a second).
 - Ctrl+1 to 3 open the tools (Ctrl+4 opens NyTest once it is on). NyTest uses the same calm grey and blue look as the rest of the app. Hovering a tool card lights its ring in a lighter grey and fills the **Open** button blue; every button and every selection is blue.
 
 ### Not tested yet
-**NyTest** was tested on Linux only: with loop devices and image files, but not yet on a real fake-capacity stick, an SD card reader or a USB SSD with SMART, and the `smartctl` reader has not met every kind of drive. They are not yet tried on Windows or macOS. Real hardware with **Secure Boot** on (Memtest86+ is not signed), and the Windows answer files, macOS and ejecting on real machines. Tested so far: QEMU (BIOS and UEFI), Windows 11 and Tiny10 laptops, CachyOS.
+**NyTest** was tested on Linux only: with loop devices and image files, but not yet on a real fake-capacity stick, an SD card reader or a USB SSD with SMART, and the `smartctl` reader has not met every kind of drive. They are not yet tried on Windows. Real hardware with **Secure Boot** on (Memtest86+ is not signed), and the Windows answer files and ejecting on real machines. Tested so far: QEMU (BIOS and UEFI), Windows 11 and Tiny10 laptops, CachyOS.

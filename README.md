@@ -3,7 +3,7 @@
 <h1 align="center">NyForge</h1>
 
 <p align="center">
-  <b>A fast, small, native USB toolkit for Linux, macOS and Windows.</b><br>
+  <b>A fast, small, native USB toolkit for Linux and Windows.</b><br>
   Flash images · build a multiboot drive · format and repair USB sticks · test speed and health<br>
   <sub>Rust · no telemetry · no account · GPL-3.0-or-later</sub>
 </p>
@@ -14,7 +14,7 @@
 
 1. [What is NyForge?](#1-what-is-nyforge)
 2. [Install](#2-install)
-   * [2.1 Linux and macOS](#21-linux-and-macos) · [2.2 Windows](#22-windows) · [2.3 Downloads](#23-downloads) · [2.4 What Linux needs](#24-what-linux-needs)
+   * [2.1 Linux](#21-linux) · [2.2 Windows](#22-windows) · [2.3 Downloads](#23-downloads) · [2.4 What Linux needs](#24-what-linux-needs)
 3. [Using the app](#3-using-the-app)
    * [3.1 NyFlash](#31--nyflash) · [3.2 Windows ISOs](#32--windows-isos) · [3.3 NyBoot](#33--nyboot) · [3.4 NyFormat](#34--nyformat) · [3.5 NyTest](#35--nytest) · [3.6 Settings](#36--settings)
 4. [Command line](#4-command-line)
@@ -31,14 +31,14 @@
 | 🧹 | **NyFormat** | Formats USB sticks and SD cards (FAT32, exFAT, FAT16, NTFS, ext2/3/4), checks bad blocks and fake capacity, **repairs** broken drives. |
 | 📊 | **NyTest** *(optional: switch it on in Settings)* | Speed test in the style of CrystalDiskMark (with IOPS and latency), sustained-write graph, surface scan, a check that the drive really has the capacity it claims (catches fake-size sticks), and a plain-words verdict. |
 
-The start screen shows **three tools**: NyFlash, NyBoot and NyFormat. **NyTest is a fourth tool that is off by default**; you switch it on in Settings (see [3.6](#36--settings): click the cog at the top right, then **Enable NyTest**). A desktop app (`nyforge-gui`) and a command line (`nyforge`) share one engine; the command line always has `nyforge test`. Shortcuts: **Ctrl+1 to 3** open NyFlash, NyBoot and NyFormat (**Ctrl+4** opens NyTest once it is on; **Cmd** on macOS), **Alt+Left** goes back, **F11** is full screen, **Ctrl/Cmd + and −** change the interface size (**0** resets it). The window shrinks to a quarter-screen tile, so it suits tiling window managers, and it remembers its size.
+The start screen shows **three tools**: NyFlash, NyBoot and NyFormat. **NyTest is a fourth tool that is off by default**; you switch it on in Settings (see [3.6](#36--settings): click the cog at the top right, then **Enable NyTest**). A desktop app (`nyforge-gui`) and a command line (`nyforge`) share one engine; the command line always has `nyforge test`. Shortcuts: **Ctrl+1 to 3** open NyFlash, NyBoot and NyFormat (**Ctrl+4** opens NyTest once it is on), **Alt+Left** goes back, **F11** is full screen, **Ctrl + and −** change the interface size (**0** resets it). The window shrinks to a quarter-screen tile, so it suits tiling window managers, and it remembers its size.
 
 > [!IMPORTANT]
 > **Safety:** the disk your system runs from is never listed. System, internal and virtual disks are refused by the engine, with no override. Every write asks first and re-checks the drive right before starting.
 
 ## 2. Install
 
-### 2.1 Linux and macOS
+### 2.1 Linux
 
 ```sh
 sudo ./install.sh
@@ -51,7 +51,6 @@ From source it builds first (needs [Rust](https://rustup.rs) 1.88+, Git and a C 
 
 * **"NyForge has to be installed with sudo":** the installer must be started with `sudo ./install.sh`; without it, it stops.
 * **Rust missing when building from source:** install it from <https://rustup.rs> as your normal user (not root); the installer builds as you and only copies the files as root.
-* **macOS:** the app is not signed; the installer clears the quarantine mark (by hand: `xattr -dr com.apple.quarantine NyForge.app`, or right-click › **Open**). If writing says "Operation not permitted", allow NyForge under Privacy & Security › Full Disk Access.
 </details>
 
 ### 2.2 Windows
@@ -68,7 +67,6 @@ Writing needs administrator rights (the app offers **Restart as administrator**)
 | System | File |
 |---|---|
 | Linux x86-64 (glibc 2.35+) | `nyforge-<version>-linux-x86_64.tar.gz` (app + CLI) |
-| macOS 11+ (Apple Silicon, Intel) | `nyforge-<version>-macos-universal.tar.gz` |
 | Windows 10/11 x86-64 | `nyforge-<version>-windows-x86_64.zip` |
 | Older Linux, ARM64, Alpine | `nyforge-cli-<version>-linux-<arch>[-musl].tar.gz` (CLI only) |
 
@@ -93,7 +91,7 @@ Choose an image (button or drag and drop), choose a drive, **Flash…**, confirm
 
 * **Verify:** tick *Verify when done*, or press *Verify drive* later. It reads the drive back and compares it with the image; a failure names the first wrong byte or file.
 * **Checksum:** the *Checksum* link checks a download against SHA-256, SHA-1 or MD5; a `SHA256SUMS` next to it is used automatically.
-* **Eject when done** (Linux, macOS): detaches the drive after the write and check, so you can unplug it straight away (`--eject`).
+* **Eject when done** (Linux): detaches the drive after the write and check, so you can unplug it straight away (`--eject`).
 * **Windows:** NyForge first asks Windows to clean the drive and wakes it before writing. If the stick drops off the USB bus and returns as the same drive, the write carries on in smaller pieces. A different drive is never written to.
 
 ### 3.2 🪟 Windows ISOs
@@ -150,7 +148,7 @@ The small cog at the top right of the window opens Settings. Everything you chan
 
 ## 4. Command line
 
-Everything the app does is `nyforge` (plus Raspberry Pi first-boot setup). `--json` prints one JSON event per line; `-y` skips confirmation. Use `sudo` on Linux/macOS, an Administrator terminal on Windows; writing to a file never needs root.
+Everything the app does is `nyforge` (plus Raspberry Pi first-boot setup). `--json` prints one JSON event per line; `-y` skips confirmation. Use `sudo` on Linux, an Administrator terminal on Windows; writing to a file never needs root.
 
 ```sh
 nyforge list                                      # drives you can write to
@@ -176,14 +174,14 @@ Exit codes: 0 success, 1 failure, 2 bad usage, 130 cancelled.
 |---|---|
 | 🐧 **Linux** | Tested on real hardware and working. |
 | 🪟 **Windows** | Tested on real hardware (Windows 11) and working. |
-| 🍎 **macOS** | **Not yet tested on real hardware.** It builds and passes automatic tests only. |
+| 🍎 **macOS** | **Not available.** There is no macOS version and no download for it. |
 
 Found a bug, or something that looks wrong? Please [open an issue](../../issues) or report it to the repository owner. Include your system, the image you used and what NyForge said; it really helps.
 
 ## 6. Warnings and limits
 
 > [!WARNING]
-> **Young software.** Do not trust any new tool blindly with a drive that holds something you care about. Back it up first. macOS is untested, and some Windows features have not yet run on real hardware (see below).
+> **Young software.** Do not trust any new tool blindly with a drive that holds something you care about. Back it up first. Some Windows features have not yet run on real hardware (see below).
 
 > [!CAUTION]
 > **Windows ISOs, and custom ones above all, are very hard to support completely.** Official, modified, stripped-down and rescue builds differ in layout, boot files, image formats and sizes. NyForge recognises a Windows ISO by its own files and handles the common cases, but it cannot promise that every build writes or starts. If yours fails, try another build or USB port and open an issue naming the ISO.
@@ -197,11 +195,11 @@ Found a bug, or something that looks wrong? Please [open an issue](../../issues)
 > **Verify on Void Linux and the BSDs:** their images carry a small boot partition that other systems rewrite once the drive is plugged in, so a read-back can differ by a few bytes there. NyForge warns first and tells that apart from a failed write.
 
 **Other limits**
-* **NyTest** is new and was tested on Linux only (loop devices and image files; not yet on a real fake-capacity stick, an SD card reader or a USB SSD with SMART). Its Windows and macOS code paths have not run on real hardware. Test results describe the moment of the test; a drive can still fail later.
+* **NyTest** is new and was tested on Linux only (loop devices and image files; not yet on a real fake-capacity stick, an SD card reader or a USB SSD with SMART). Its Windows code path has not run on real hardware. Test results describe the moment of the test; a drive can still fail later.
 * **NyBoot:** no Secure Boot, no persistence, MBR only (up to 2 TiB).
-* **Formatting:** ext2/3/4 and NTFS need Linux tools (`mkfs.ext*`, `mkntfs`); on Windows NTFS is made by Windows; macOS can make neither. Drives over 2 TB default to GPT.
+* **Formatting:** ext2/3/4 and NTFS need Linux tools (`mkfs.ext*`, `mkntfs`); on Windows NTFS is made by Windows. Drives over 2 TB default to GPT.
 * **Windows stick problems:** some sticks drop off the bus under raw writes ("Drive disappeared", error 433). Plug straight into the computer, try another port, turn off *USB selective suspend*. NyFormat can usually repair a half-written stick.
-* **Signing:** macOS and Windows builds are not code-signed, so SmartScreen and Gatekeeper may warn.
+* **Signing:** the Windows build is not code-signed, so SmartScreen may warn.
 
 ## 7. Build, contribute, license
 

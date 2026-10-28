@@ -1,5 +1,5 @@
 #!/bin/sh
-# NyForge installer for Linux and macOS (Windows: install.cmd). Works from the release
+# NyForge installer for Linux (Windows: install.cmd). Works from the release
 # tarball (binaries next to this script) and from a git clone (builds with cargo first).
 # Installs the `nyforge` command and the `nyforge-gui` desktop app.
 #
@@ -35,7 +35,6 @@ bin=$prefix/bin
 if [ "$uninstall" = 1 ]; then
   rm -f "$bin/nyforge" "$bin/nyforge-gui" "$bin/nyforge-uninstall"
   rm -rf "$prefix/share/doc/nyforge"
-  if [ "$(uname -s)" = Darwin ]; then rm -rf /Applications/NyForge.app; fi
   rm -f "$prefix/share/applications/nyforge.desktop" \
         "$prefix/share/icons/hicolor/256x256/apps/nyforge.png" \
         "$prefix/share/icons/hicolor/scalable/apps/nyforge.svg" \
@@ -86,7 +85,7 @@ uninst="$bin/nyforge-uninstall"
 cat > "$uninst" <<'UNINSTALL_EOF'
 #!/bin/sh
 # NyForge uninstaller (written by install.sh). Removes NyForge from this computer: the programs, the menu entry, the
-# icons, the documentation and, on macOS, NyForge.app. It never touches your own files or any drive.
+# icons and the documentation. It never touches your own files or any drive.
 #   sudo nyforge-uninstall        asks first
 #   sudo nyforge-uninstall -y     does not ask
 set -u
@@ -129,9 +128,6 @@ for p in $prefixes; do
   [ -d "$p/share/applications" ] && command -v update-desktop-database >/dev/null 2>&1 && update-desktop-database "$p/share/applications" >/dev/null 2>&1
 done
 rm_path /usr/share/polkit-1/actions/org.nyforge.engine.policy
-if [ "$(uname -s)" = Darwin ]; then
-  rm_path /Applications/NyForge.app
-fi
 # Last, this script itself (a running shell script can be deleted safely).
 for p in $prefixes; do rm_path "$p/bin/nyforge-uninstall"; done
 if [ "$failed" = 0 ]; then
@@ -164,22 +160,6 @@ if [ "$have_gui" = 1 ] && [ "$(uname -s)" = Linux ]; then
   fi
   command -v update-desktop-database >/dev/null 2>&1 && update-desktop-database "$prefix/share/applications" >/dev/null 2>&1 || true
   command -v gtk-update-icon-cache >/dev/null 2>&1 && gtk-update-icon-cache -q "$prefix/share/icons/hicolor" >/dev/null 2>&1 || true
-fi
-
-# macOS: put the double-clickable app in Applications.
-if [ "$(uname -s)" = Darwin ] && [ -d "$assets/NyForge.app" ]; then
-  appdir=/Applications
-  mkdir -p "$appdir"
-  rm -rf "$appdir/NyForge.app"
-  cp -R "$assets/NyForge.app" "$appdir/NyForge.app"
-  xattr -dr com.apple.quarantine "$appdir/NyForge.app" 2>/dev/null || true
-  echo "NyForge.app installed in $appdir"
-fi
-
-# macOS: a binary downloaded with a browser carries a "quarantine" mark that makes Gatekeeper refuse
-# to start unsigned command-line tools. Clear it for the copy we just installed.
-if [ "$(uname -s)" = Darwin ]; then
-  for b in nyforge nyforge-gui; do xattr -d com.apple.quarantine "$bin/$b" 2>/dev/null || true; done
 fi
 
 echo "NyForge installed in $bin"

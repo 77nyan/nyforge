@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Draws the NyForge logo and writes assets/logo/*: nyforge.svg, PNGs, nyforge.ico, nyforge.icns.
+"""Draws the NyForge logo and writes assets/logo/*: nyforge.svg, PNGs, nyforge.ico.
 
 The mark is a USB stick on a blue tile, tilted towards a spark (the "forge" flash), with soft lighting, a steel plug, a glossy
 body and a glowing spark. The app draws the 64/128/256 px PNGs this script writes (crates/nyforge-gui/src/logo.rs). Needs Pillow and numpy.
@@ -260,5 +260,4 @@ if __name__ == "__main__":
     for n in (32, 64, 128, 256, 512):
         imgs[n].save(os.path.join(OUT, f"nyforge-{n}.png"))
     imgs[256].save(os.path.join(OUT, "nyforge.ico"), sizes=[(n, n) for n in (16, 24, 32, 48, 64, 128, 256)])
-    imgs[1024].save(os.path.join(OUT, "nyforge.icns"))
     print("wrote", sorted(os.listdir(OUT)))

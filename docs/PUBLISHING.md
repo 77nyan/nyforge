@@ -1,7 +1,7 @@
 # Publishing NyForge 0.1.7 to GitHub (fresh start)
 
 This guide starts from nothing: a new, empty GitHub repository and the `nyforge-0.1.7-source.tar.gz` file. It is
-copy-and-paste, and it publishes a release with downloads for Linux, macOS and Windows.
+copy-and-paste, and it publishes a release with downloads for Linux and Windows.
 It assumes Omarchy (Arch Linux with Hyprland), but the commands work in any Linux terminal.
 
 Open a terminal with **Super + Enter**. Every command below is typed there. The GitHub user name used here is
@@ -101,17 +101,16 @@ git push
 
 ## 5. Watch the automatic build
 
-Every push runs the **CI** workflow on Linux, macOS and Windows machines at GitHub:
+Every push runs the **CI** workflow on Linux and Windows machines at GitHub:
 
 ```sh
 gh run list --limit 5
 gh run watch                         # follow the newest run live
 ```
 
-Or open the **Actions** tab of the repository. Fix anything red before you release. Two steps
-("Flash a RAM disk" on macOS and "Flash a virtual disk" on Windows) are allowed to fail; read their log and
-see whether they passed, because that is real information about the macOS and Windows code that has never run
-anywhere else.
+Or open the **Actions** tab of the repository. Fix anything red before you release. The step
+"Flash a virtual disk" on Windows is allowed to fail; read its log and see whether it passed, because that is
+real information about the Windows code.
 
 ## 6. Try the release build without publishing
 
@@ -120,7 +119,7 @@ gh workflow run Release
 gh run watch
 ```
 
-This builds the Linux, macOS and Windows downloads and keeps them as run artifacts (Actions tab, bottom of
+This builds the Linux and Windows downloads and keeps them as run artifacts (Actions tab, bottom of
 the run) without creating a release. Download them and try them on real machines before you tag.
 
 ## 7. Publish the release
@@ -138,7 +137,6 @@ Pushing the tag starts the **Release** workflow. When it finishes, the release a
 `.sha256` checksum:
 
 * `nyforge-0.1.7-linux-x86_64.tar.gz` (app and command line)
-* `nyforge-0.1.7-macos-universal.tar.gz` (NyForge.app and command line)
 * `nyforge-0.1.7-windows-x86_64.zip` (app and command line)
 * `nyforge-cli-0.1.7-linux-*.tar.gz` (command line only: older Linux, ARM64, Alpine)
 
@@ -168,7 +166,7 @@ gh release create v0.1.7 dist/nyforge-0.1.7-linux-x86_64.tar.gz dist/nyforge-0.1
   --title "NyForge 0.1.7" --notes "Huge update! See CHANGELOG.md for the full list."
 ```
 
-macOS and Windows files can only be built on those systems, which is what the workflow does for you.
+The Windows file can only be built on Windows, which is what the workflow does for you.
 
 ## 8. Next versions
 
@@ -183,9 +181,8 @@ git tag v0.1.8 && git push origin v0.1.8
 
 ## 9. Things only you can do
 
-* Code-sign the Windows build and sign and notarize the macOS app. Until then Windows SmartScreen and macOS
-  Gatekeeper warn on first start (the README tells users how to continue). Signing needs certificates and an Apple
-  developer account, so it is not set up here, and no secret should ever be committed for it: use GitHub
+* Code-sign the Windows build. Until then Windows SmartScreen warns on first start (the README tells users how to
+  continue). Signing needs a certificate, so it is not set up here, and no secret should ever be committed for it: use GitHub
   **Settings > Secrets and variables > Actions** if you add it later.
-* Test on real machines with a spare USB stick: macOS and Windows have never run the app before CI. The Windows
+* Test on real machines with a spare USB stick: Windows has never run the app before CI. The Windows
   "finished" notification in particular has only been checked by reading the code.

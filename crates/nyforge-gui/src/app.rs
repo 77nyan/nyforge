@@ -15,6 +15,8 @@ pub struct App {
     last_frame: Option<std::time::Instant>,
     /// Smoothed time one frame takes to build (seconds); paces the frame cap so slow machines are not driven flat out.
     frame_cost: f32,
+    /// How long the previous frame slept to keep to the cap. It is part of eframe's `cpu_usage`, so it is taken out again.
+    slept: f32,
     screen: Screen,
     entered: f64,
     flash: FlashScreen,
@@ -51,6 +53,7 @@ impl App {
         App {
             last_frame: None,
             frame_cost: 0.002,
+            slept: 0.0,
             screen,
             entered: -10.0,
             flash: FlashScreen::new(),
@@ -266,14 +269,21 @@ impl eframe::App for App {
         // Without vsync (see main.rs) frames are not throttled by the display, so cap them. About 120 per second while
         // frames are cheap (identical to before); when a frame takes long (old CPU, software rendering) the cap eases
         // towards 30 per second so the animation stays smooth without using the whole CPU and starving input and the writer.
+        // The measured cost of a frame includes the time this very function slept last time. Counting that as "cost" made the
+        // cap feed on itself: every sleep made the next frame look more expensive, so the cap crept up to the slowest value
+        // (30 frames a second) on any computer as soon as something animated. Only the real work is counted.
         if let Some(cost) = frame.info().cpu_usage {
-            self.frame_cost = self.frame_cost * 0.9 + cost.min(0.1) * 0.1;
+            let work = (cost - self.slept).max(0.0);
+            self.frame_cost = self.frame_cost * 0.9 + work.min(0.1) * 0.1;
         }
+        self.slept = 0.0;
         let gap = std::time::Duration::from_secs_f32((self.frame_cost * 2.5).clamp(0.008, 0.033));
         if let Some(prev) = self.last_frame {
             let spent = prev.elapsed();
             if spent < gap {
+                let t = std::time::Instant::now();
                 std::thread::sleep(gap - spent);
+                self.slept = t.elapsed().as_secs_f32();
             }
         }
         self.last_frame = Some(std::time::Instant::now());
