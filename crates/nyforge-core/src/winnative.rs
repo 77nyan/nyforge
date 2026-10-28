@@ -85,6 +85,43 @@ pub fn format_script(disk: u32, gpt: bool, parts: &[NativePart]) -> std::result:
     Ok(s)
 }
 
+/// Format one existing partition (after NyForge's own writer made the partition table) with `diskpart`: what
+/// `Format-Volume` does, without needing Windows to have built a volume object for it first.
+pub fn partition_format_script(disk: u32, number: u32, fs: Fs, label: &str, cluster: Option<u64>) -> std::result::Result<String, String> {
+    let word = fs_word(fs).ok_or_else(|| format!("Windows cannot make {} itself.", fs.name()))?;
+    if label.chars().any(|c| c == '"' || c.is_control()) {
+        return Err("That volume name has a character diskpart cannot take.".into());
+    }
+    let mut s = format!("rescan\r\nselect disk {disk}\r\nselect partition {number}\r\nformat fs={word} quick");
+    if !label.is_empty() {
+        s.push_str(&format!(" label=\"{label}\""));
+    }
+    if let Some(c) = cluster {
+        s.push_str(&format!(" unit={c}"));
+    }
+    s.push_str("\r\nassign\r\nexit\r\n");
+    Ok(s)
+}
+
+/// Run [`partition_format_script`], trying again for a few seconds: right after a partition table was written
+/// Windows can take a moment before `diskpart` can select the new partition.
+pub fn format_partition(disk: u32, number: u32, fs: Fs, label: &str, cluster: Option<u64>) -> Result<()> {
+    let script = partition_format_script(disk, number, fs, label, cluster).map_err(NyError::invalid)?;
+    let never = AtomicBool::new(false);
+    let mut last = NyError::other("Windows' disk tool did not run.");
+    for i in 0..5u64 {
+        match run_diskpart(&script, &never, Duration::from_secs(300)) {
+            Ok(_) => {
+                std::thread::sleep(Duration::from_millis(500));
+                return Ok(());
+            }
+            Err(e) => last = e,
+        }
+        std::thread::sleep(Duration::from_millis(1000 + 500 * i));
+    }
+    Err(last)
+}
+
 /// Can this format be done by Windows' own tools, and with which partitions? `Err` says why not, for the log.
 /// Only the plain job qualifies: a quick format with a partition table. Wiping, capacity tests, spare space at the
 /// end and the ext family stay with NyForge's own writer, which is where those features live.
@@ -211,6 +248,16 @@ mod tests {
 
     fn spec(fs: Fs, size: Option<u64>, label: &str) -> PartSpec {
         PartSpec { fs, size, label: label.into(), cluster: None }
+    }
+
+    #[test]
+    fn a_partition_format_script_selects_the_partition_and_formats_it() {
+        let s = partition_format_script(2, 1, Fs::Ntfs, "DATA", Some(4096)).unwrap();
+        let lines: Vec<&str> = s.lines().collect();
+        assert_eq!(lines, vec!["rescan", "select disk 2", "select partition 1", "format fs=ntfs quick label=\"DATA\" unit=4096", "assign", "exit"]);
+        assert!(partition_format_script(2, 1, Fs::Ext4, "", None).is_err());
+        assert!(partition_format_script(2, 1, Fs::Ntfs, "A\"B", None).is_err());
+        assert_eq!(partition_format_script(2, 2, Fs::Ntfs, "", None).unwrap().lines().nth(3), Some("format fs=ntfs quick"));
     }
 
     #[test]

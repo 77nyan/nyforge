@@ -9,6 +9,7 @@ pub mod format;
 pub mod image;
 pub mod iso;
 pub mod nyboot;
+pub mod nytest;
 pub mod partition;
 pub mod progress;
 pub mod wim;
@@ -17,6 +18,7 @@ pub mod sys;
 pub mod usbformat;
 pub mod verify;
 pub mod winnative;
+pub mod winntfs;
 pub mod writer;
 
 pub use error::{ErrorKind, NyError, Result};

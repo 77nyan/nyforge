@@ -173,7 +173,7 @@ pub fn resolve_target(spec: &str, policy: TargetPolicy) -> Result<ResolvedTarget
         if md.is_file() {
             return Ok(ResolvedTarget::File { path: spec.to_string() });
         }
-    } else if !spec.starts_with("/dev/") && !spec.starts_with("\\\\.\\") {
+    } else if (!spec.starts_with("/dev/") || spec.starts_with("/dev/shm/")) && !spec.starts_with("\\\\.\\") {
         // A path that does not exist and is not a device: treat as a new image file.
         return Ok(ResolvedTarget::File { path: spec.to_string() });
     }
@@ -195,6 +195,39 @@ pub fn resolve_target(spec: &str, policy: TargetPolicy) -> Result<ResolvedTarget
     }
     Err(NyError::new(ErrorKind::InvalidInput, format!("{spec} is not a drive NyForge can see."))
         .with_hint("Run `nyforge list` to see available drives."))
+}
+
+/// Why a drive may not be tested, or `None` when it may. NyTest is for USB sticks, SD cards and other removable
+/// drives: an internal disk (and above all the one running the system) is never a subject, whatever the flags say.
+/// Loop and virtual devices pass only when `allow_virtual` is set (a testing aid).
+pub fn test_refusal(d: &Drive, allow_virtual: bool) -> Option<String> {
+    match d.safety {
+        Safety::Safe => None,
+        Safety::Virtual if allow_virtual => None,
+        Safety::System => Some(format!("{} ({}) holds the running system. NyTest only tests USB sticks and other removable drives.", d.path, d.display_name())),
+        Safety::Internal => Some(format!("{} ({}) is an internal disk. NyTest only tests USB sticks, SD cards and other removable drives.", d.path, d.display_name())),
+        Safety::Virtual => Some(format!("{} is a virtual drive. NyTest only tests USB sticks, SD cards and other removable drives.", d.path)),
+    }
+}
+
+/// The drive a test is aimed at, by name. Refuses anything that is not a removable drive (see [`test_refusal`]).
+pub fn resolve_stick(spec: &str, allow_virtual: bool) -> Result<Drive> {
+    let normalized = normalize_spec(spec);
+    let spec = normalized.as_str();
+    let drives = list_drives()?;
+    let canon = canonical_device_path(spec);
+    if let Some(d) = drives.iter().find(|d| same_device(&d.path, &canon)) {
+        return match test_refusal(d, allow_virtual) {
+            None => Ok(d.clone()),
+            Some(why) => Err(NyError::new(ErrorKind::Unsafe, why).with_hint("Plug in the USB stick or card and name that drive (`nyforge list` shows them).")),
+        };
+    }
+    for d in &drives {
+        if let Some(part) = d.partitions.iter().find(|pt| same_device(&pt.path, &canon)) {
+            return Err(NyError::new(ErrorKind::InvalidInput, format!("{} is a partition, not a whole drive.", part.path)).with_hint(format!("Name the whole drive: {}", d.path)));
+        }
+    }
+    Err(NyError::new(ErrorKind::InvalidInput, format!("{spec} is not a drive NyForge can see.")).with_hint("Run `nyforge list` to see available drives."))
 }
 
 fn check_drive(d: Drive, policy: TargetPolicy) -> Result<ResolvedTarget> {

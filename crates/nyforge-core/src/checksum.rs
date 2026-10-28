@@ -9,7 +9,6 @@
 //! numbers describe.
 
 use crate::error::{ErrorKind, NyError, Result};
-use std::fs::File;
 use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -219,28 +218,87 @@ impl Hasher {
 
 /// Hash of a file's bytes as lower-case hex. `progress(done, total)` is called about every 8 MiB.
 pub fn hash_file(path: &Path, algo: Algo, cancel: &AtomicBool, progress: &mut dyn FnMut(u64, u64)) -> Result<String> {
-    let mut f = File::open(path).map_err(|e| NyError::from_io(&e, &format!("opening {}", path.display())))?;
+    let mut f = crate::sys::open_sequential(path).map_err(|e| NyError::from_io(&e, &format!("opening {}", path.display())))?;
     let total = f.metadata().map(|m| m.len()).unwrap_or(0);
     let mut h = Hasher::new(algo);
-    let mut buf = vec![0u8; 4 << 20];
+    const BLOCK: usize = 4 << 20;
     let (mut done, mut since) = (0u64, 0u64);
-    loop {
-        if cancel.load(Ordering::Relaxed) {
-            return Err(NyError::cancelled());
+    let multi = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(1) > 1;
+    if !multi {
+        let mut buf = vec![0u8; BLOCK];
+        loop {
+            if cancel.load(Ordering::Relaxed) {
+                return Err(NyError::cancelled());
+            }
+            let n = match f.read(&mut buf) {
+                Ok(0) => break,
+                Ok(n) => n,
+                Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
+                Err(e) => return Err(NyError::from_io(&e, &format!("reading {}", path.display()))),
+            };
+            h.update(&buf[..n]);
+            done += n as u64;
+            since += n as u64;
+            if since >= 8 << 20 {
+                since = 0;
+                progress(done, total);
+            }
         }
-        let n = match f.read(&mut buf) {
-            Ok(0) => break,
-            Ok(n) => n,
-            Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
-            Err(e) => return Err(NyError::from_io(&e, &format!("reading {}", path.display()))),
-        };
-        h.update(&buf[..n]);
-        done += n as u64;
-        since += n as u64;
-        if since >= 8 << 20 {
-            since = 0;
-            progress(done, total);
+        progress(done, total);
+        return Ok(h.finish());
+    }
+    // Reading the next block while the previous one is being hashed: the disk and the CPU work at the same time.
+    // Two buffers travel round a pair of channels, so nothing is allocated per block.
+    let (full_tx, full_rx) = crossbeam_channel::bounded::<(Vec<u8>, usize)>(2);
+    let (free_tx, free_rx) = crossbeam_channel::bounded::<Vec<u8>>(3);
+    for _ in 0..3 {
+        let _ = free_tx.send(vec![0u8; BLOCK]);
+    }
+    let stop = AtomicBool::new(false);
+    let mut failure: Option<NyError> = None;
+    std::thread::scope(|sc| {
+        let stop = &stop;
+        let reader = sc.spawn(move || -> Option<NyError> {
+            while let Ok(mut buf) = free_rx.recv() {
+                if stop.load(Ordering::Relaxed) {
+                    return None;
+                }
+                let n = loop {
+                    match f.read(&mut buf) {
+                        Ok(n) => break n,
+                        Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
+                        Err(e) => return Some(NyError::from_io(&e, &format!("reading {}", path.display()))),
+                    }
+                };
+                if n == 0 || full_tx.send((buf, n)).is_err() {
+                    return None;
+                }
+            }
+            None
+        });
+        while let Ok((buf, n)) = full_rx.recv() {
+            if cancel.load(Ordering::Relaxed) {
+                failure = Some(NyError::cancelled());
+                break;
+            }
+            h.update(&buf[..n]);
+            done += n as u64;
+            since += n as u64;
+            if since >= 8 << 20 {
+                since = 0;
+                progress(done, total);
+            }
+            let _ = free_tx.send(buf);
         }
+        stop.store(true, Ordering::Relaxed);
+        drop(free_tx);
+        drop(full_rx);
+        if let Ok(Some(e)) = reader.join() {
+            failure.get_or_insert(e);
+        }
+    });
+    if let Some(e) = failure {
+        return Err(e);
     }
     progress(done, total);
     Ok(h.finish())

@@ -23,12 +23,14 @@ pub struct WindowsArgs {
     /// Volume name (default: taken from the ISO)
     #[arg(long)]
     pub label: Option<String>,
-    /// Windows 11: skip the TPM, Secure Boot, RAM, CPU and storage checks in Setup
-    #[arg(long)]
-    pub bypass_checks: bool,
+    #[command(flatten)]
+    pub answers: AnswerArgs,
     /// UEFI only: skip the legacy BIOS boot code
     #[arg(long)]
     pub uefi_only: bool,
+    /// Drive layout: auto (FAT32 unless the files need NTFS), fat32 (UEFI and legacy BIOS), ntfs (NTFS + UEFI:NTFS, UEFI only; handles install.esd over 4 GB)
+    #[arg(long, value_name = "LAYOUT", default_value = "auto")]
+    pub layout: nyforge_core::winntfs::WinLayout,
     /// Do not ask for confirmation (required when not run from a terminal)
     #[arg(short = 'y', long)]
     pub yes: bool,
@@ -40,6 +42,9 @@ pub struct WindowsArgs {
     /// When it is made, read the drive back and compare every file with the ISO
     #[arg(long)]
     pub verify: bool,
+    /// When it is made (and verified), detach the drive so it can be unplugged right away (Linux and macOS)
+    #[arg(long)]
+    pub eject: bool,
     #[arg(long)]
     pub json: bool,
 }
@@ -69,7 +74,8 @@ pub fn run(a: WindowsArgs) -> Res {
         label: a.label.clone(),
         file_size,
         bios: !a.uefi_only,
-        unattend: Unattend { bypass_hardware_checks: a.bypass_checks },
+        unattend: a.answers.to_unattend()?,
+        layout: a.layout,
         ..Default::default()
     };
     let cancel = install_ctrlc();
@@ -97,5 +103,62 @@ pub fn run(a: WindowsArgs) -> Res {
         }
         eprintln!("  Boot the target computer from this drive. (Not yet tried on real Windows hardware: tell us how it goes.)");
     }
+    if a.eject {
+        crate::eject_note(&t, a.json, &ui);
+    }
     Ok(0)
+}
+
+/// The setup answers, shared by `windows` (to write them) and `verify --windows` (to expect them).
+#[derive(clap::Args, Clone, Default)]
+pub struct AnswerArgs {
+    /// Windows 11: skip the TPM, Secure Boot, RAM, CPU and storage checks in Setup
+    #[arg(long)]
+    pub bypass_checks: bool,
+    /// Do not ask for a Microsoft account when Windows starts for the first time
+    #[arg(long)]
+    pub skip_online_account: bool,
+    /// Make this local administrator account (no password), so Windows starts without a Microsoft account
+    #[arg(long, value_name = "NAME")]
+    pub local_account: Option<String>,
+    /// Do not ask the privacy and data-sharing questions when Windows starts for the first time
+    #[arg(long)]
+    pub skip_privacy_questions: bool,
+    /// Do not turn on automatic BitLocker device encryption
+    #[arg(long)]
+    pub disable_bitlocker: bool,
+    /// Language and region of the new system: a tag like en-US, or "auto" for this computer's
+    #[arg(long, value_name = "TAG")]
+    pub locale: Option<String>,
+}
+
+impl AnswerArgs {
+    pub fn to_unattend(&self) -> Result<Unattend, NyError> {
+        if let Some(n) = &self.local_account {
+            nyforge_core::winmedia::check_account_name(n)?;
+        }
+        let locale = match self.locale.as_deref() {
+            None => None,
+            Some("auto") => {
+                let found = nyforge_core::winmedia::detect_locale();
+                if found.is_none() {
+                    // Not worth stopping for: the installer is made without a language setting, and Windows asks for it.
+                    eprintln!("Could not tell this computer's language and region, so the language is not preset (Windows will ask).");
+                }
+                found
+            }
+            Some(t) => {
+                nyforge_core::winmedia::check_locale(t)?;
+                Some(t.to_string())
+            }
+        };
+        Ok(Unattend {
+            bypass_hardware_checks: self.bypass_checks,
+            skip_online_account: self.skip_online_account,
+            local_account: self.local_account.clone(),
+            skip_privacy_questions: self.skip_privacy_questions,
+            disable_bitlocker: self.disable_bitlocker,
+            locale,
+        })
+    }
 }

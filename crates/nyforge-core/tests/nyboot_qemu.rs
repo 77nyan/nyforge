@@ -405,3 +405,34 @@ fn isos_dropped_in_with_a_file_manager_show_up_in_the_menu() {
     }
     let _ = std::fs::remove_dir_all(&d);
 }
+
+#[test]
+#[ignore]
+fn an_updated_drive_boots_and_honours_the_menu_settings() {
+    use nyforge_core::nyboot::{config, update};
+    if !need(&["qemu-system-x86_64", "xorriso"]) {
+        return;
+    }
+    let d = workdir("update");
+    let guest = |tag: &str| {
+        format!("serial --unit=0 --speed=115200\nterminal_input serial console\nterminal_output serial console\necho \"NBX-GUEST {tag} platform=$grub_platform\"\nhalt\n")
+    };
+    let a = make_iso(&d, "alpha", "ALPHA", &[("boot/grub/grub.cfg", guest("alpha").as_str())]);
+    let b = make_iso(&d, "bravo", "BRAVO", &[("boot/grub/grub.cfg", guest("bravo").as_str())]);
+    // Without any setting the menu would wait for a key: the settings must make it start "bravo" by itself.
+    let img = build_drive(&d, "echo \"NBX-MENU platform=$grub_platform\"\n", &[(a.as_path(), ""), (b.as_path(), "")]);
+    {
+        let mut od = drive::open(&Target::file(&img), true).unwrap();
+        let cfg = config::MenuConfig { timeout_secs: Some(1), default_entry: Some("bravo".into()), ..Default::default() };
+        config::save(&mut od, &cfg).unwrap();
+    }
+    let rep = update::update(&Target::file(&img), true, Arc::new(AtomicBool::new(false)), &mut |_| {}).unwrap();
+    assert_eq!(rep.to, nyforge_core::nyboot::assets::VERSION);
+    for (mode, plat) in [("bios", "pc"), ("uefi", "efi")] {
+        let lines = boot(&img, mode, 150, &d.join(mode));
+        let all = lines.join("\n");
+        assert!(all.contains(&format!("NBX-MENU platform={plat}")), "{mode}: menu never appeared after the update:\n{all}");
+        assert!(all.contains(&format!("NBX-GUEST bravo platform={plat}")), "{mode}: the preselected entry did not start:\n{all}");
+        assert!(!all.contains("NBX-GUEST alpha"), "{mode}: the wrong entry started:\n{all}");
+    }
+}

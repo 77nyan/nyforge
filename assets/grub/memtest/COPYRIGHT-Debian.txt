@@ -1,0 +1,49 @@
+Format: https://www.debian.org/doc/packaging-manuals/copyright-format/1.0/
+Upstream-Name: Memtest86+
+Upstream-Contact: Samuel Demeulemeester <memtest@memtest.org>
+Source: https://github.com/memtest86plus/memtest86plus
+
+Files: *
+Copyright: 2020-2022, Martin Whitaker
+           2004-2022, Samuel Demeulemeester <sdemeule@memtest.org>
+           Chris Brad <cbrady@sgi.com>
+           Rick van Rein
+License: GPL-2
+
+Files: boot/bootsect.S
+  boot/header.S
+  boot/startup32.S
+  boot/startup64.S
+Copyright: 2020, Martin Whitaker
+  1991, 1992, Linus Torvalds
+  Chris Brady
+License: GPL-2
+
+Files: boot/efisetup.c
+Copyright: 2020-2022, Martin Whitaker
+           2011, Intel Corporation; author Matt Fleming
+License: GPL-2
+
+Files: debian/*
+Copyright: Yann Dirson <dirson@debian.org>
+           Fabio Fantoni <fantonifabio@tiscali.it>
+           Felix Zielcke <fzielcke@z-51.de>
+License: GPL-2
+
+License: GPL-2
+ This package is free software; you can redistribute it and/or modify
+ it under the terms of the GNU General Public License as published by
+ the Free Software Foundation; version 2 dated June, 1991.
+ .
+ This package is distributed in the hope that it will be useful,
+ but WITHOUT ANY WARRANTY; without even the implied warranty of
+ MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ GNU General Public License for more details.
+ .
+ You should have received a copy of the GNU General Public License
+ along with this package; if not, write to the Free Software
+ Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA  02110-1301 USA
+ .
+ On Debian systems, the complete text of the GNU General Public License
+ version 2 can be found in `/usr/share/common-licenses/GPL-2'.
+

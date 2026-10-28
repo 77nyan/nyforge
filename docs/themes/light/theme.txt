@@ -1,0 +1,61 @@
+# Example NyBoot theme: light. A plain GRUB 2 theme; copy the folder with
+#   nyforge boot theme <drive> docs/themes/light
+# Every .pf2 font in this folder is loaded for you. Fonts are named "<family> <style> <size>".
+
+title-text: ""
+desktop-color: "#e9ecf1"
+
+terminal-font: "GNU Unifont Regular 16"
+terminal-left: "10%"
+terminal-top: "10%"
+terminal-width: "80%"
+terminal-height: "80%"
+terminal-border: "0"
+terminal-box: "terminal_box_*.png"
+
++ label {
+    id = "keys"
+    left = 24
+    top = 100%-52
+    width = 70%
+    height = 24
+    text = "↑ ↓  Choose     Enter  Start     E  Edit     C  Command line"
+    font = "Liberation Sans Regular 15"
+    color = "#5b6578"
+    align = "left"
+}
+
++ boot_menu {
+    left = 15%
+    top = 12%
+    width = 70%
+    height = 76%
+    item_font = "Liberation Sans Regular 24"
+    selected_item_font = "Liberation Sans Bold 24"
+    item_color = "#2a3140"
+    selected_item_color = "#0d1b33"
+    icon_width = 0
+    icon_height = 0
+    item_icon_space = 0
+    item_height = 46
+    item_padding = 12
+    item_spacing = 2
+    menu_pixmap_style = "menu_*.png"
+    selected_item_pixmap_style = "select_*.png"
+    scrollbar = true
+    scrollbar_width = 6
+    scrollbar_thumb = "scrollbar_thumb_*.png"
+    scrollbar_frame = "scrollbar_frame_*.png"
+}
+
++ label {
+    id = "__timeout__"
+    left = 0
+    top = 90%
+    width = 100%
+    height = 24
+    text = "Starting automatically in %d seconds"
+    font = "Liberation Sans Regular 17"
+    color = "#5b6578"
+    align = "center"
+}

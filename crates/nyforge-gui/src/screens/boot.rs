@@ -31,8 +31,29 @@ struct AddFile {
 
 enum Action {
     Install,
+    /// Put the newest boot code and menu on the drive; the images stay.
+    Update,
     Add(Vec<AddFile>),
     Remove(String),
+}
+
+/// The menu settings shown in their dialog (read from the drive first, written back with Save).
+#[derive(Clone)]
+struct MenuForm {
+    /// 0 = wait for a choice.
+    timeout: u32,
+    /// `None`: the first entry.
+    default: Option<String>,
+    text_mode: bool,
+    /// Name of a custom theme folder; empty: the built-in theme.
+    theme: String,
+}
+
+/// Extra kernel options for one image.
+#[derive(Clone)]
+struct ParamsForm {
+    path: String,
+    text: String,
 }
 
 #[derive(Clone)]
@@ -60,9 +81,21 @@ struct Contents {
 #[derive(PartialEq, Clone)]
 enum OpKind {
     Install,
+    Update,
     Add(usize),
     Remove(String),
     List,
+    ReadConfig,
+    SaveConfig,
+    ReadParams(String),
+    SaveParams,
+}
+
+impl OpKind {
+    /// Short reads that happen in the background without taking over the screen.
+    fn quiet(&self) -> bool {
+        matches!(self, OpKind::List | OpKind::ReadConfig | OpKind::ReadParams(_))
+    }
 }
 
 struct Active {
@@ -82,6 +115,8 @@ pub struct BootScreen {
     install_label: String,
     ask_stop: bool,
     last_list_id: Option<DriveId>,
+    menu_form: Option<MenuForm>,
+    params_form: Option<ParamsForm>,
 }
 
 impl BootScreen {
@@ -97,11 +132,13 @@ impl BootScreen {
             install_label: "NYBOOT".into(),
             ask_stop: false,
             last_list_id: None,
+            menu_form: None,
+            params_form: None,
         }
     }
 
     pub fn busy(&self) -> bool {
-        self.active.as_ref().map(|a| a.kind != OpKind::List).unwrap_or(false) || self.gate.as_ref().map(|g| g.is_rechecking()).unwrap_or(false)
+        self.active.as_ref().map(|a| !a.kind.quiet()).unwrap_or(false) || self.gate.as_ref().map(|g| g.is_rechecking()).unwrap_or(false)
     }
 
     pub fn abort(&mut self) {
@@ -121,7 +158,7 @@ impl BootScreen {
     }
 
     fn start(&mut self, kind: OpKind, args: Vec<String>, target: Candidate, ctx: &egui::Context) {
-        let needs_finished = matches!(kind, OpKind::Install | OpKind::Add(_));
+        let needs_finished = matches!(kind, OpKind::Install | OpKind::Update | OpKind::Add(_));
         let mut args = args;
         args.extend(drives::engine_flags(&target));
         self.active = Some(Active { kind, run: Run::new(worker::spawn(args, ctx.clone()), needs_finished), target });
@@ -147,6 +184,9 @@ impl BootScreen {
                 self.contents = None;
                 self.start(OpKind::Install, args, cand, ctx);
             }
+            Action::Update => {
+                self.start(OpKind::Update, vec!["boot".into(), "update".into(), t], cand, ctx);
+            }
             Action::Add(files) => {
                 let mut args = vec!["boot".into(), "add".into(), t];
                 args.extend(files.iter().map(|f| f.path.to_string_lossy().into_owned()));
@@ -163,6 +203,15 @@ impl BootScreen {
     fn finish_active(&mut self, ctx: &egui::Context) {
         let Some(a) = self.active.take() else { return };
         let outcome = a.run.outcome();
+        if !a.kind.quiet() {
+            let ok = match &a.kind {
+                OpKind::Install => "NyBoot installed",
+                OpKind::Update => "NyBoot updated",
+                OpKind::Add(_) => "Images added",
+                _ => "Done",
+            };
+            crate::notify::job_done(ctx, "NyBoot", ok, "You can unplug the drive.", &outcome);
+        }
         let name = a.target.name.clone();
         let mut relist = false;
         match (&a.kind, &outcome) {
@@ -178,6 +227,45 @@ impl BootScreen {
                 self.status = if f.message.contains("not a NyBoot drive") { Status::NotInstalled } else { Status::ReadFailed(f.clone()) };
             }
             (OpKind::List, _) => {}
+            (OpKind::Update, Outcome::Success) => {
+                self.result = Some((Tone::Success, "NyBoot updated".into(), format!("{name} now has the newest boot code and menu. Your images and settings were not touched.")));
+                relist = true;
+            }
+            (OpKind::Update, Outcome::Cancelled) => {
+                self.result = Some((Tone::Warn, "Update stopped".into(), "Run the update again to finish it. Your images are untouched.".into()));
+            }
+            (OpKind::Update, Outcome::Failed(f)) => {
+                self.result = Some((Tone::Error, f.title.clone(), join(&f.message, &f.hint)));
+            }
+            (OpKind::ReadConfig, Outcome::Success) => {
+                if let Some(v) = a.run.find_json("timeout_secs") {
+                    self.menu_form = Some(MenuForm {
+                        timeout: v["timeout_secs"].as_u64().unwrap_or(0) as u32,
+                        default: v["default_entry"].as_str().map(str::to_string),
+                        text_mode: v["text_mode"].as_bool().unwrap_or(false),
+                        theme: v["theme"].as_str().unwrap_or("").to_string(),
+                    });
+                }
+            }
+            (OpKind::ReadConfig, Outcome::Failed(f)) | (OpKind::ReadParams(_), Outcome::Failed(f)) => {
+                self.result = Some((Tone::Error, f.title.clone(), join(&f.message, &f.hint)));
+            }
+            (OpKind::ReadConfig, _) | (OpKind::ReadParams(_), Outcome::Cancelled) => {}
+            (OpKind::ReadParams(path), Outcome::Success) => {
+                let text = a.run.find_json("params").and_then(|v| v["params"].as_str()).unwrap_or("").to_string();
+                self.params_form = Some(ParamsForm { path: path.clone(), text });
+            }
+            (OpKind::ReadParams(_), _) => {}
+            (OpKind::SaveConfig, Outcome::Success) => {
+                self.result = Some((Tone::Success, "Menu settings saved".into(), "They apply the next time the drive starts.".into()));
+            }
+            (OpKind::SaveParams, Outcome::Success) => {
+                self.result = Some((Tone::Success, "Boot options saved".into(), "They are added the next time this image starts.".into()));
+            }
+            (OpKind::SaveConfig, Outcome::Failed(f)) | (OpKind::SaveParams, Outcome::Failed(f)) => {
+                self.result = Some((Tone::Error, f.title.clone(), join(&f.message, &f.hint)));
+            }
+            (OpKind::SaveConfig, _) | (OpKind::SaveParams, _) => {}
             (OpKind::Install, Outcome::Success) => {
                 self.result = Some((Tone::Success, "NyBoot installed".into(), format!("{name} is now a NyBoot drive. Add ISO images below.")));
                 self.status = Status::Installed;
@@ -262,7 +350,7 @@ impl BootScreen {
             }
         }
 
-        if self.active.as_ref().map(|a| a.kind != OpKind::List).unwrap_or(false) {
+        if self.active.as_ref().map(|a| !a.kind.quiet()).unwrap_or(false) {
             self.running_ui(ui);
         } else {
             self.main_ui(ui, sh);
@@ -277,7 +365,10 @@ impl BootScreen {
             OpKind::Add(1) => ("Adding an image".to_string(), true),
             OpKind::Add(n) => (format!("Adding {n} images"), true),
             OpKind::Remove(p) => (format!("Removing {p}"), false),
-            OpKind::List => (String::new(), false),
+            OpKind::Update => (format!("Updating NyBoot on {}", a.target.name), false),
+            OpKind::SaveConfig => ("Saving the menu settings".to_string(), false),
+            OpKind::SaveParams => ("Saving the boot options".to_string(), false),
+            OpKind::List | OpKind::ReadConfig | OpKind::ReadParams(_) => (String::new(), false),
         };
         widgets::run_header(ui, Icon::Boot, &title);
         let rows = vec![("Drive", format!("{} · {} · {}", a.target.name, a.target.size_text(), a.target.drive.path))];
@@ -347,10 +438,21 @@ impl BootScreen {
                             self.gate = Some(Gate::new(Purpose::Boot, &c.id, Action::Install, &ctx));
                             self.notice = None;
                         }
-                        Btn::new("Update bootloader").enabled(false).tip("Not available yet: NyBoot cannot update its boot code without reformatting the drive. Reinstalling erases everything on it.").show(ui);
+                        let mut up = Btn::new("Update bootloader").enabled(installed && why.is_none() && self.gate.is_none());
+                        up = up.tip(if !installed { "NyBoot has to be installed on this drive first." } else { "Puts the newest boot code and menu on the drive. Your images and settings stay." });
+                        if up.show(ui).clicked() {
+                            self.gate = Some(Gate::new(Purpose::Boot, &c.id, Action::Update, &ctx));
+                            self.notice = None;
+                        }
+                        let mut ms = Btn::new("Menu settings…").enabled(installed && why.is_none() && self.gate.is_none());
+                        ms = ms.tip(if !installed { "NyBoot has to be installed on this drive first." } else { "How long the menu waits, which image is preselected, and plain text mode." });
+                        if ms.show(ui).clicked() {
+                            let args = vec!["boot".into(), "config".into(), c.drive.path.clone()];
+                            self.start(OpKind::ReadConfig, args, c.clone(), &ctx);
+                        }
                     });
                     ui.add_space(2.0);
-                    ui.label(small_muted("Installing or reinstalling erases the whole drive, including every image on it. Removing a single image (below) never touches the bootloader."));
+                    ui.label(small_muted("Installing or reinstalling erases the whole drive, including every image on it. Updating and removing a single image (below) never erase anything else."));
                 }
             }
         });
@@ -397,6 +499,7 @@ impl BootScreen {
             }
         });
         ui.add_space(6.0);
+        let mut options: Option<String> = None;
         match (&self.contents, &self.status) {
             (Some(ct), _) => {
                 if ct.items.is_empty() {
@@ -415,6 +518,9 @@ impl BootScreen {
                                     widgets::fit_label(ui, &it.path, |s| RichText::new(s), FontId::new(14.0, egui::FontFamily::Proportional), w - 190.0);
                                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                                         if !it.dir {
+                                            if it.path.to_ascii_lowercase().ends_with(".iso") && Btn::new("Options").small().enabled(can && self.gate.is_none() && !listing).tip("Extra boot options for this image, such as nomodeset").show(ui).clicked() {
+                                                options = Some(it.path.clone());
+                                            }
                                             if icon_button(ui, Icon::Trash, &format!("Remove {} from the drive", it.path), can && self.gate.is_none()).clicked() {
                                                 remove = Some(it.path.clone());
                                             }
@@ -460,6 +566,10 @@ impl BootScreen {
                     });
                 }
             }
+        }
+        if let Some(p) = options {
+            let args = vec!["boot".into(), "params".into(), c.drive.path.clone(), p.clone()];
+            self.start(OpKind::ReadParams(p), args, c.clone(), &ctx);
         }
     }
 
@@ -557,6 +667,26 @@ impl BootScreen {
                             cancel = true;
                         }
                     }
+                    Action::Update => {
+                        let (_, close) = dialog(ctx, "boot-update", 460.0, |ui| {
+                            ui.label(heading("Update NyBoot on this drive?"));
+                            ui.add_space(8.0);
+                            drive_card(ui, c);
+                            ui.add_space(8.0);
+                            banner(ui, Tone::Info, "Your images are not touched.", "Only the boot code and the menu are replaced with the newest ones. Your images, your menu settings and the partitions stay exactly as they are. Do not unplug the drive while it works.", None);
+                            dialog_buttons(ui, |ui| {
+                                if Btn::primary(if rechecking { "Checking…" } else { "Update" }).enabled(!rechecking).show(ui).clicked() {
+                                    accept = true;
+                                }
+                                if Btn::new("Cancel").enabled(!rechecking).show(ui).clicked() {
+                                    cancel = true;
+                                }
+                            });
+                        });
+                        if close && !rechecking {
+                            cancel = true;
+                        }
+                    }
                     Action::Remove(path) => {
                         let (_, close) = dialog(ctx, "boot-remove", 440.0, |ui| {
                             ui.label(heading("Remove this file from the drive?"));
@@ -581,6 +711,7 @@ impl BootScreen {
                 }
             }
         }
+        self.form_dialogs(ctx);
         if cancel {
             self.gate = None;
         }
@@ -589,7 +720,7 @@ impl BootScreen {
                 g.accept(ctx);
             }
         }
-        if self.ask_stop && self.active.as_ref().map(|a| a.kind != OpKind::List).unwrap_or(false) {
+        if self.ask_stop && self.active.as_ref().map(|a| !a.kind.quiet()).unwrap_or(false) {
             let installing = matches!(self.active.as_ref().map(|a| &a.kind), Some(OpKind::Install));
             let (mut stop, mut keep) = (false, false);
             let (_, close) = dialog(ctx, "boot-stop", 420.0, |ui| {
@@ -610,6 +741,128 @@ impl BootScreen {
                 self.ask_stop = false;
             } else if keep || close {
                 self.ask_stop = false;
+            }
+        }
+    }
+}
+
+impl BootScreen {
+    fn form_dialogs(&mut self, ctx: &egui::Context) {
+        let Some(c) = self.sel.selected().cloned() else {
+            self.menu_form = None;
+            self.params_form = None;
+            return;
+        };
+        let images: Vec<String> = self
+            .contents
+            .as_ref()
+            .map(|ct| ct.items.iter().filter(|i| !i.dir && i.path.to_ascii_lowercase().ends_with(".iso")).map(|i| i.path.rsplit('/').next().unwrap_or(&i.path)[..i.path.rsplit('/').next().unwrap_or(&i.path).len() - 4].to_string()).collect())
+            .unwrap_or_default();
+        if let Some(mut f) = self.menu_form.take() {
+            let f = &mut f;
+            let (mut save, mut cancel) = (false, false);
+            let (_, close) = dialog(ctx, "boot-menu", 460.0, |ui| {
+                ui.label(heading("Menu settings"));
+                ui.label(small_muted(format!("For {} · applies the next time it starts", c.name)));
+                ui.add_space(10.0);
+                egui::Grid::new("boot-menu-grid").num_columns(2).spacing([16.0, 8.0]).show(ui, |ui| {
+                    ui.label(small_muted("Start by itself after"));
+                    let tname = |t: u32| if t == 0 { "Never: wait for my choice".to_string() } else { format!("{t} seconds") };
+                    egui::ComboBox::from_id_salt("boot-timeout").selected_text(tname(f.timeout)).width(250.0).show_ui(ui, |ui| {
+                        for t in [0u32, 3, 5, 10, 30, 60] {
+                            ui.selectable_value(&mut f.timeout, t, tname(t));
+                        }
+                        if ![0u32, 3, 5, 10, 30, 60].contains(&f.timeout) {
+                            let t = f.timeout;
+                            ui.selectable_value(&mut f.timeout, t, tname(t));
+                        }
+                    });
+                    ui.end_row();
+                    ui.label(small_muted("Preselected image"));
+                    let dname = |d: &Option<String>| d.clone().unwrap_or_else(|| "The first one".to_string());
+                    egui::ComboBox::from_id_salt("boot-default").selected_text(dname(&f.default)).width(250.0).show_ui(ui, |ui| {
+                        ui.selectable_value(&mut f.default, None, "The first one");
+                        for n in &images {
+                            ui.selectable_value(&mut f.default, Some(n.clone()), n.as_str());
+                        }
+                        if let Some(d) = f.default.clone() {
+                            if !images.contains(&d) {
+                                ui.selectable_value(&mut f.default, Some(d.clone()), d);
+                            }
+                        }
+                    });
+                    ui.end_row();
+                    ui.label(small_muted("Theme"));
+                    ui.add(egui::TextEdit::singleline(&mut f.theme).desired_width(250.0).margin(egui::Margin::symmetric(8, 6)).hint_text(RichText::new("empty: the NyBoot theme").color(DIM)))
+                        .on_hover_text("The name of a theme folder in /nyboot/themes on the drive. Add one with: nyforge boot theme <drive> <folder>");
+                    ui.end_row();
+                });
+                ui.add_space(4.0);
+                ui.checkbox(&mut f.text_mode, "Plain text menu").on_hover_text("Use this if the graphical menu shows nothing or looks wrong on an old computer.");
+                dialog_buttons(ui, |ui| {
+                    if Btn::primary("Save").show(ui).clicked() {
+                        save = true;
+                    }
+                    if Btn::new("Cancel").show(ui).clicked() {
+                        cancel = true;
+                    }
+                });
+            });
+            if save {
+                let mut args: Vec<String> = vec!["boot".into(), "config".into(), c.drive.path.clone()];
+                if f.timeout == 0 {
+                    args.push("--no-timeout".into());
+                } else {
+                    args.extend(["--timeout".into(), f.timeout.to_string()]);
+                }
+                match &f.default {
+                    Some(d) => args.extend(["--default".into(), d.clone()]),
+                    None => args.push("--clear-default".into()),
+                }
+                args.extend(["--text-mode".into(), if f.text_mode { "on" } else { "off" }.into()]);
+                if f.theme.trim().is_empty() {
+                    args.push("--clear-theme".into());
+                } else {
+                    args.extend(["--theme".into(), f.theme.trim().to_string()]);
+                }
+                self.start(OpKind::SaveConfig, args, c.clone(), ctx);
+            } else if !(cancel || close) {
+                self.menu_form = Some(f.clone());
+            }
+        }
+        if let Some(mut f) = self.params_form.take() {
+            let f = &mut f;
+            let (mut save, mut cancel) = (false, false);
+            let bad = nyforge_core::nyboot::config::check_quoted("The boot options", &f.text).err().map(|e| e.message);
+            let (_, close) = dialog(ctx, "boot-params", 500.0, |ui| {
+                ui.label(heading("Boot options for this image"));
+                ui.label(small_muted(f.path.clone()));
+                ui.add_space(10.0);
+                ui.add(egui::TextEdit::singleline(&mut f.text).desired_width(f32::INFINITY).margin(egui::Margin::symmetric(8, 7)).hint_text(RichText::new("for example: nomodeset quiet").color(DIM)));
+                if let Some(e) = &bad {
+                    ui.label(RichText::new(e).size(12.0).color(DANGER));
+                }
+                ui.add_space(4.0);
+                ui.label(small_muted("Added to the kernel's command line when this image starts. Leave it empty for none. Most images need nothing here."));
+                dialog_buttons(ui, |ui| {
+                    if Btn::primary("Save").enabled(bad.is_none()).show(ui).clicked() {
+                        save = true;
+                    }
+                    if Btn::new("Cancel").show(ui).clicked() {
+                        cancel = true;
+                    }
+                });
+            });
+            if save {
+                let mut args: Vec<String> = vec!["boot".into(), "params".into(), c.drive.path.clone(), f.path.clone()];
+                if f.text.trim().is_empty() {
+                    args.push("--clear".into());
+                } else {
+                    args.push(f.text.trim().to_string());
+                }
+                self.start(OpKind::SaveParams, args, c.clone(), ctx);
+            } else if !(cancel || close) {
+                self.params_form = Some(f.clone());
             }
         }
     }

@@ -1,19 +1,41 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" width="256" height="256" role="img" aria-label="NyForge">
   <defs>
-    <linearGradient id="tile" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#5CC0FF"/><stop offset="1" stop-color="#1C74D4"/></linearGradient>
-    <filter id="soft" x="-20%" y="-20%" width="140%" height="140%"><feGaussianBlur stdDeviation="5"/></filter>
+    <linearGradient id="tile" x1="0.2" y1="0" x2="0.8" y2="1"><stop offset="0" stop-color="#7AD2FF"/><stop offset="1" stop-color="#1662C8"/></linearGradient>
+    <radialGradient id="light" cx="0.38" cy="0.02" r="0.7"><stop offset="0" stop-color="#FFFFFF" stop-opacity="0.55"/><stop offset="1" stop-color="#FFFFFF" stop-opacity="0"/></radialGradient>
+    <linearGradient id="sheen" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#FFFFFF" stop-opacity="0.26"/><stop offset="1" stop-color="#FFFFFF" stop-opacity="0"/></linearGradient>
+    <linearGradient id="rim" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#FFFFFF" stop-opacity="0.6"/><stop offset="0.8" stop-color="#FFFFFF" stop-opacity="0.08"/></linearGradient>
+    <linearGradient id="body" x1="0" y1="0" x2="1" y2="0.35"><stop offset="0" stop-color="#FFFFFF"/><stop offset="0.45" stop-color="#F4F8FD"/><stop offset="1" stop-color="#C9D9EC"/></linearGradient>
+    <linearGradient id="steel" x1="0" y1="0" x2="1" y2="0"><stop offset="0" stop-color="#A4B3C7"/><stop offset="0.3" stop-color="#F4F8FD"/><stop offset="0.75" stop-color="#B9C6D8"/><stop offset="1" stop-color="#E6EDF6"/></linearGradient>
+    <linearGradient id="pin" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#4A5870"/><stop offset="1" stop-color="#1C2638"/></linearGradient>
+    <linearGradient id="gloss" x1="0" y1="0" x2="1" y2="0"><stop offset="0" stop-color="#FFFFFF" stop-opacity="0"/><stop offset="0.5" stop-color="#FFFFFF" stop-opacity="0.6"/><stop offset="1" stop-color="#FFFFFF" stop-opacity="0"/></linearGradient>
+    <radialGradient id="star" cx="0.5" cy="0.5" r="0.5"><stop offset="0" stop-color="#FFE06A"/><stop offset="1" stop-color="#FFB020"/></radialGradient>
+    <radialGradient id="glow" cx="0.5" cy="0.5" r="0.5"><stop offset="0" stop-color="#FFC83D" stop-opacity="0.75"/><stop offset="1" stop-color="#FFC83D" stop-opacity="0"/></radialGradient>
+    <filter id="soft" x="-30%" y="-30%" width="160%" height="160%"><feGaussianBlur stdDeviation="6"/></filter>
+    <filter id="tight" x="-30%" y="-30%" width="160%" height="160%"><feGaussianBlur stdDeviation="2.4"/></filter>
+    <clipPath id="clip"><rect x="8" y="8" width="240" height="240" rx="56"/></clipPath>
   </defs>
   <rect x="8" y="8" width="240" height="240" rx="56" fill="url(#tile)"/>
-  <g transform="translate(7 11) translate(126 136) rotate(38.0)" filter="url(#soft)" fill="#082864" fill-opacity="0.35">
-    <rect x="-31" y="-30" width="62" height="96" rx="13"/>
-    <rect x="-22" y="-80" width="44" height="56" rx="4"/>
+  <g clip-path="url(#clip)">
+    <rect x="0" y="0" width="256" height="256" fill="url(#light)"/>
+    <rect x="13" y="12" width="230" height="106" rx="50" fill="url(#sheen)"/>
+    <g transform="translate(7 11) translate(126 136) rotate(38.0)" filter="url(#soft)" fill="#062260" fill-opacity="0.42">
+      <rect x="-31" y="-30" width="62" height="96" rx="13" fill="#062260"/><rect x="-22" y="-80" width="44" height="56" rx="4" fill="#062260"/>
+    </g>
+    <g transform="translate(3.15 4.95) translate(126 136) rotate(38.0)" filter="url(#tight)" fill="#062260" fill-opacity="0.32">
+      <rect x="-31" y="-30" width="62" height="96" rx="13" fill="#062260"/><rect x="-22" y="-80" width="44" height="56" rx="4" fill="#062260"/>
+    </g>
   </g>
+  <rect x="9.6" y="9.6" width="236.8" height="236.8" rx="54.4" fill="none" stroke="url(#rim)" stroke-width="3.2"/>
   <g transform="translate(126 136) rotate(38.0)">
-    <rect x="-22" y="-80" width="44" height="56" rx="4" fill="#D3DDEA"/>
-    <rect x="-31" y="-30" width="62" height="96" rx="13" fill="#FFFFFF"/>
-    <rect x="-13" y="-70" width="8" height="22" rx="1.5" fill="#2F3B4E"/>
-    <rect x="5" y="-70" width="8" height="22" rx="1.5" fill="#2F3B4E"/>
+    <rect x="-22" y="-80" width="44" height="56" rx="4" fill="url(#steel)"/>
+    <rect x="-31" y="-30" width="62" height="96" rx="13" fill="url(#body)"/>
+    <rect x="-25" y="-22" width="7" height="66" rx="3.5" fill="url(#gloss)"/>
+    <rect x="-13" y="-70" width="8" height="22" rx="1.5" fill="url(#pin)"/>
+    <rect x="5" y="-70" width="8" height="22" rx="1.5" fill="url(#pin)"/>
+    <circle cx="0" cy="47" r="8.1" fill="#96B4D7"/>
     <circle cx="0" cy="47" r="6.5" fill="#2A7FDA"/>
   </g>
-  <polygon points="207,35 210.92,45.08 221,49 210.92,52.92 207,63 203.08,52.92 193,49 203.08,45.08" fill="#FFC83D"/>
+  <circle cx="207" cy="49" r="30.800000000000004" fill="url(#glow)"/>
+  <polygon points="207,35 210.92,45.08 221,49 210.92,52.92 207,63 203.08,52.92 193,49 203.08,45.08" fill="url(#star)"/>
+  <polygon points="207,41.72 209.0384,46.9616 214.28,49 209.0384,51.0384 207,56.28 204.9616,51.0384 199.72,49 204.9616,46.9616" fill="#FFFCEB" fill-opacity="0.92"/>
 </svg>

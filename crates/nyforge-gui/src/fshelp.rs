@@ -65,7 +65,7 @@ fn per_system(fs: Fs) -> Vec<(Os, String)> {
             (Os::MacOs, format!("{name} cannot be made on macOS. Format the drive on a Linux computer, or choose exFAT.")),
         ],
         Fs::Ntfs => vec![
-            (Os::Linux, "NTFS can be made once the package ntfs-3g is installed.".to_string()),
+            (Os::Linux, "NTFS can be made once the formatter is installed (Arch and CachyOS: ntfsprogs; Debian and Ubuntu: ntfs-3g).".to_string()),
             (Os::Windows, "NTFS works on Windows with nothing to install.".to_string()),
             (Os::MacOs, "NTFS cannot be made on macOS. Format the drive on Windows or Linux, or choose exFAT.".to_string()),
         ],
@@ -94,7 +94,7 @@ pub fn help(fs: Fs, reason: Reason, drive_bytes: u64, os: Os) -> Help {
             let (pkg_arch, pkg_deb, pkg_fedora, what) = if is_ext(fs) {
                 ("e2fsprogs", "e2fsprogs", "e2fsprogs", "mkfs.ext4")
             } else {
-                ("ntfs-3g", "ntfs-3g", "ntfs-3g ntfsprogs", "mkfs.ntfs")
+                ("ntfsprogs", "ntfs-3g", "ntfsprogs", "mkfs.ntfs")
             };
             Help {
                 title,
@@ -102,7 +102,7 @@ pub fn help(fs: Fs, reason: Reason, drive_bytes: u64, os: Os) -> Help {
                     "NyForge makes {name} with your system’s own “{what}” program, and it is not installed on this computer. FAT16, FAT32 and exFAT are made by NyForge itself and always work."
                 ),
                 commands: vec![
-                    format!("Arch, Omarchy, Manjaro:  sudo pacman -S --needed {pkg_arch}"),
+                    format!("Arch, CachyOS, Omarchy, Manjaro:  sudo pacman -S --needed {pkg_arch}"),
                     format!("Debian, Ubuntu, Mint:    sudo apt install {pkg_deb}"),
                     format!("Fedora:                  sudo dnf install {pkg_fedora}"),
                 ],
@@ -152,7 +152,7 @@ mod tests {
         let all = h.commands.join("\n");
         assert!(all.contains("pacman -S --needed e2fsprogs") && all.contains("apt install e2fsprogs") && all.contains("dnf install e2fsprogs"));
         let n = help(Fs::Ntfs, Reason::ToolMissing, 0, Os::Linux);
-        assert!(n.commands.join("\n").contains("ntfs-3g"));
+        assert!(n.commands.join("\n").contains("pacman -S --needed ntfsprogs") && n.commands.join("\n").contains("apt install ntfs-3g"));
         assert_eq!(h.systems.len(), 3, "all three systems are explained");
         assert_eq!(h.systems[0].0, Os::Linux, "this computer's system comes first");
     }

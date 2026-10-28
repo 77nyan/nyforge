@@ -50,6 +50,105 @@ pub fn prepare_device_for_erase(drive: &Drive, unmount: bool) -> Result<DevicePr
     prep
 }
 
+/// Open a file we are about to read once from start to end (an image, a file to hash) and tell the OS so, which
+/// makes it read ahead harder and drop the pages behind us instead of filling the cache. Purely a hint: it never fails
+/// the open and never changes what is read.
+/// Windows: `FILE_FLAG_SEQUENTIAL_SCAN`. Linux: `posix_fadvise(SEQUENTIAL)`. macOS: `F_RDAHEAD`.
+pub fn open_sequential(path: &Path) -> io::Result<File> {
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::OpenOptionsExt;
+        const FILE_FLAG_SEQUENTIAL_SCAN: u32 = 0x0800_0000;
+        return OpenOptions::new().read(true).custom_flags(FILE_FLAG_SEQUENTIAL_SCAN).open(path);
+    }
+    #[cfg(not(windows))]
+    {
+        let f = File::open(path)?;
+        hint_sequential(&f);
+        Ok(f)
+    }
+}
+
+/// The same hint for a file that is already open (Unix; a no-op on Windows, where it has to be given at open time).
+pub fn hint_sequential(file: &File) {
+    #[cfg(target_os = "linux")]
+    {
+        use std::os::fd::AsRawFd;
+        // SAFETY: plain syscall on a valid descriptor; the result is ignored on purpose (advice only).
+        unsafe {
+            libc::posix_fadvise(file.as_raw_fd(), 0, 0, libc::POSIX_FADV_SEQUENTIAL);
+        }
+    }
+    #[cfg(target_os = "macos")]
+    {
+        use std::os::fd::AsRawFd;
+        // SAFETY: as above.
+        unsafe {
+            libc::fcntl(file.as_raw_fd(), libc::F_RDAHEAD, 1);
+        }
+    }
+    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+    let _ = file;
+}
+
+/// What happened when a drive was asked to eject.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Eject {
+    /// The system accepted the request: the drive can be unplugged.
+    Done,
+    /// It could not be done from here (the reason is for the person).
+    Unavailable(String),
+}
+
+/// The commands that safely detach `device` on this kind of system, most specific first. Pure: tested everywhere.
+pub fn eject_commands(device: &str, macos: bool, windows: bool) -> Vec<Vec<String>> {
+    let v = |a: &[&str]| a.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+    if windows {
+        return vec![];
+    }
+    if macos {
+        return vec![v(&["diskutil", "eject", &mac_block_path(device)])];
+    }
+    // `udisksctl power-off` also stops the drive's motor or LED; `eject` is the plain fallback.
+    vec![v(&["udisksctl", "power-off", "-b", device]), v(&["eject", device])]
+}
+
+/// Flush, then ask the system to detach the drive so it can be unplugged right away. Best effort: never an error.
+pub fn eject(device: &Path) -> Eject {
+    let dev = device.to_string_lossy().into_owned();
+    let cmds = eject_commands(&dev, cfg!(target_os = "macos"), cfg!(windows));
+    if cmds.is_empty() {
+        return Eject::Unavailable("Windows has no way to do this from NyForge yet: use \"Safely Remove Hardware\" in the tray.".into());
+    }
+    let mut last = String::from("no tool for it was found");
+    for c in cmds {
+        match std::process::Command::new(&c[0]).args(&c[1..]).stdin(std::process::Stdio::null()).output() {
+            Ok(o) if o.status.success() => return Eject::Done,
+            Ok(o) => last = String::from_utf8_lossy(&o.stderr).trim().lines().next().unwrap_or("the system refused").to_string(),
+            Err(_) => {}
+        }
+    }
+    Eject::Unavailable(last)
+}
+
+/// Ask the drive to discard (TRIM) `len` bytes from the start, where the system can. Linux: `BLKDISCARD`. `false` on
+/// every other system and when the drive refuses (many USB bridges do): the caller carries on without it.
+pub fn discard_all(file: &std::fs::File, len: u64) -> bool {
+    #[cfg(target_os = "linux")]
+    {
+        use std::os::fd::AsRawFd;
+        const BLKDISCARD: libc::c_ulong = 0x1277;
+        let range: [u64; 2] = [0, len & !511];
+        // SAFETY: BLKDISCARD takes a pointer to two u64 (start, length) and only reads them.
+        return unsafe { libc::ioctl(file.as_raw_fd(), BLKDISCARD, range.as_ptr()) } == 0;
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        let _ = (file, len);
+        false
+    }
+}
+
 /// Windows: read the first sector, trying for a few seconds, so that a stick that went to sleep while NyForge was
 /// getting ready (USB selective suspend) is awake, and one that is re-appearing has time to finish, before the
 /// first write. The first raw write after a pause was where drives were seen to drop off the bus. Never an error.
@@ -791,6 +890,17 @@ pub fn read_exact_at(_f: &File, _buf: &mut [u8], _off: u64) -> io::Result<()> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn eject_commands_per_system() {
+        use super::eject_commands;
+        assert!(eject_commands("/dev/sdb", false, true).is_empty());
+        let mac = eject_commands("/dev/rdisk4", true, false);
+        assert_eq!(mac, vec![vec!["diskutil".to_string(), "eject".into(), "/dev/disk4".into()]]);
+        let lin = eject_commands("/dev/sdb", false, false);
+        assert_eq!(lin[0], vec!["udisksctl", "power-off", "-b", "/dev/sdb"]);
+        assert_eq!(lin[1], vec!["eject", "/dev/sdb"]);
+    }
+
     use crate::device::{Bus, Drive, Safety};
 
     fn drive(serial: Option<&str>, size: u64) -> Drive {

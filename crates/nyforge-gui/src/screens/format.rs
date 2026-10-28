@@ -29,6 +29,7 @@ enum WipeChoice {
     Quick,
     Zero,
     Random,
+    Discard,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -55,11 +56,28 @@ pub struct FormatScreen {
     cluster: Option<u64>,
     scheme: SchemeChoice,
     wipe: WipeChoice,
+    wipe_passes: u8,
+    verify_wipe: bool,
     cap: CapChoice,
     fit_real: bool,
     fs_help: Option<(Fs, crate::fshelp::Reason)>,
     passes: u8,
     advanced: bool,
+    /// The run being asked for (or running) is a Repair: look at the old layout, deep-clean, then format.
+    repair: bool,
+    /// Partition alignment in MiB (1, 4 or 8).
+    align_mib: u64,
+    /// MBR: mark the partition active (bootable).
+    bootable: bool,
+    /// Spare space at the end of the drive, in GB (text as typed).
+    reserve_gb: String,
+    /// Two partitions: the first one's size in GB (text), and what the second one is.
+    second: bool,
+    first_gb: String,
+    second_fs: Fs,
+    second_label: String,
+    /// Read the partition table and filesystems back when done.
+    verify_result: bool,
     gate: Option<Gate<()>>,
     notice: Option<String>,
     run: Option<Run>,
@@ -81,11 +99,22 @@ impl FormatScreen {
             cluster: None,
             scheme: SchemeChoice::Auto,
             wipe: WipeChoice::Quick,
+            wipe_passes: 1,
+            verify_wipe: false,
             cap: CapChoice::Off,
             fit_real: false,
             fs_help: None,
             passes: 1,
             advanced: false,
+            repair: false,
+            align_mib: 1,
+            bootable: false,
+            reserve_gb: String::new(),
+            second: false,
+            first_gb: String::new(),
+            second_fs: Fs::ExFat,
+            second_label: String::new(),
+            verify_result: true,
             gate: None,
             notice: None,
             run: None,
@@ -159,6 +188,19 @@ impl FormatScreen {
         }
     }
 
+    /// A size typed in GB ("2", "0.5") as bytes; `None` for empty text.
+    fn gb(text: &str) -> Result<Option<u64>, String> {
+        let t = text.trim();
+        if t.is_empty() {
+            return Ok(None);
+        }
+        let v: f64 = t.replace(',', ".").parse().map_err(|_| format!("\"{t}\" is not a size in GB."))?;
+        if !v.is_finite() || v <= 0.0 {
+            return Err("A size must be more than zero.".into());
+        }
+        Ok(Some((v * 1_000_000_000.0) as u64))
+    }
+
     /// Everything that stops the Format button, in plain words.
     fn problem(&self, sh: &Shell, c: Option<&Candidate>) -> Option<String> {
         if let Some(w) = sh.why_not() {
@@ -179,11 +221,52 @@ impl FormatScreen {
         if cfg!(windows) && self.fs == Fs::Ntfs && self.scheme == SchemeChoice::None {
             return Some("On Windows an NTFS drive needs a partition table. Choose MBR, GPT or Automatic.".into());
         }
+        if self.fit_real && self.cap == CapChoice::Full && self.scheme == SchemeChoice::Gpt {
+            return Some("“Format only the part that works” cannot be used with GPT (its backup table has to sit at the real end of the drive). Choose MBR or Automatic.".into());
+        }
+        let reserve = match Self::gb(&self.reserve_gb) {
+            Ok(r) => r,
+            Err(e) => return Some(format!("Spare space: {e}")),
+        };
+        if let Some(r) = reserve {
+            if r + 64 * 1024 * 1024 >= c.drive.size {
+                return Some("The spare space is as big as the drive.".into());
+            }
+        }
+        if self.second {
+            if self.scheme == SchemeChoice::None {
+                return Some("Two partitions need a partition table. Choose MBR, GPT or Automatic.".into());
+            }
+            match Self::gb(&self.first_gb) {
+                Ok(Some(f)) if f + reserve.unwrap_or(0) + 80 * 1024 * 1024 < c.drive.size => {}
+                Ok(Some(_)) => return Some("The first partition leaves no room for the second one.".into()),
+                Ok(None) => return Some("Type the size of the first partition (in GB).".into()),
+                Err(e) => return Some(format!("First partition: {e}")),
+            }
+            if let Some(p) = Self::fs_problem(self.second_fs, c.drive.size) {
+                return Some(format!("Second partition: {p}"));
+            }
+            if let Err(e) = fsmake::validate_label(self.second_fs, self.second_label.trim()) {
+                return Some(format!("Second partition: {}", e.message));
+            }
+            if self.label.contains(':') || self.second_label.contains(':') {
+                return Some("With two partitions a volume label cannot contain a colon.".into());
+            }
+        }
         None
     }
 
     fn args(&self, c: &Candidate) -> Vec<String> {
-        let mut a: Vec<String> = vec!["format".into(), c.drive.path.clone(), "--fs".into(), fs_arg(self.fs).into(), "--label".into(), self.label.trim().to_string()];
+        let mut a: Vec<String> = vec!["format".into(), c.drive.path.clone()];
+        if self.second {
+            // fs:size:label:cluster for each partition; the second takes the rest
+            let first = Self::gb(&self.first_gb).ok().flatten().unwrap_or(0);
+            let cl = self.cluster.map(|c| c.to_string()).unwrap_or_default();
+            a.extend(["--partition".into(), format!("{}:{}M:{}:{}", fs_arg(self.fs), (first / (1 << 20)).max(1), self.label.trim(), cl)]);
+            a.extend(["--partition".into(), format!("{}::{}", fs_arg(self.second_fs), self.second_label.trim())]);
+        } else {
+            a.extend(["--fs".into(), fs_arg(self.fs).into(), "--label".into(), self.label.trim().to_string()]);
+        }
         a.push("--scheme".into());
         a.push(match self.scheme {
             SchemeChoice::Auto => "auto",
@@ -197,8 +280,17 @@ impl FormatScreen {
             WipeChoice::Quick => "quick",
             WipeChoice::Zero => "zero",
             WipeChoice::Random => "random",
+            WipeChoice::Discard => "discard",
         }
         .into());
+        if matches!(self.wipe, WipeChoice::Zero | WipeChoice::Random) {
+            if self.wipe_passes > 1 {
+                a.extend(["--wipe-passes".into(), self.wipe_passes.to_string()]);
+            }
+            if self.verify_wipe {
+                a.push("--verify-wipe".into());
+            }
+        }
         match self.cap {
             CapChoice::Off => {}
             CapChoice::Quick => a.extend(["--test-capacity".into(), "quick".into()]),
@@ -213,7 +305,24 @@ impl FormatScreen {
             }
         }
         if let Some(cl) = self.cluster {
-            a.extend(["--cluster-size".into(), cl.to_string()]);
+            if !self.second {
+                a.extend(["--cluster-size".into(), cl.to_string()]);
+            }
+        }
+        if self.align_mib > 1 {
+            a.extend(["--align".into(), format!("{}M", self.align_mib)]);
+        }
+        if self.bootable && self.scheme != SchemeChoice::Gpt && self.scheme != SchemeChoice::None {
+            a.push("--bootable".into());
+        }
+        if let Ok(Some(r)) = Self::gb(&self.reserve_gb) {
+            a.extend(["--reserve".into(), format!("{}M", (r / (1 << 20)).max(1))]);
+        }
+        if !self.verify_result {
+            a.push("--no-verify-result".into());
+        }
+        if self.repair {
+            a.push("--repair".into());
         }
         if c.test_file {
             a.extend(["--size".into(), c.drive.size.to_string()]);
@@ -235,7 +344,12 @@ impl FormatScreen {
                 GateEvent::Start(c) => {
                     self.gate = None;
                     let args = self.args(&c);
-                    self.summary = format!("{}{}", self.fs.name(), if self.label.trim().is_empty() { String::new() } else { format!(" · “{}”", self.label.trim()) });
+                    self.summary = format!(
+                        "{}{}{}",
+                        self.fs.name(),
+                        if self.label.trim().is_empty() { String::new() } else { format!(" · “{}”", self.label.trim()) },
+                        if self.second { format!(" + {}", self.second_fs.name()) } else { String::new() }
+                    );
                     self.run = Some(Run::new(worker::spawn(args, ctx.clone()), true));
                     self.target = Some(c);
                     self.stage = Stage::Running;
@@ -251,6 +365,9 @@ impl FormatScreen {
                 self.report = run.find_json("partitions").cloned();
                 self.outcome = Some(run.outcome());
                 self.stage = Stage::Done;
+                if let Some(o) = &self.outcome {
+                    crate::notify::job_done(&ctx, "NyFormat", if self.repair { "Repair complete" } else { "Format complete" }, "You can unplug the drive.", o);
+                }
             }
         }
         if matches!(self.stage, Stage::Setup) {
@@ -358,18 +475,19 @@ impl FormatScreen {
                     });
                 }
             });
-            ui.add_space(6.0);
-            if widgets::link_button(ui, "Restore full capacity (fix a drive stuck at a few MB after flashing an ISO)", sel.is_some()).clicked() {
-                if let Some(c) = &sel {
-                    self.fs = fsmake_auto(c.drive.size);
-                    self.fs_touched = false;
-                    self.label.clear();
-                    self.cluster = None;
-                    self.scheme = SchemeChoice::Auto;
-                    self.wipe = WipeChoice::Quick;
-                    self.cap = CapChoice::Off;
+            ui.add_space(8.0);
+            let repair_ok = sel.is_some() && self.gate.is_none() && self.problem(&*sh, sel.as_ref()).is_none();
+            ui.horizontal_wrapped(|ui| {
+                let tip = if sel.is_none() { "Select the drive first." } else if !repair_ok { "Fix the problem with the options above first." } else { "" };
+                if Btn::new("Repair drive…").icon(Icon::Refresh).enabled(repair_ok).tip(tip).show(ui).clicked() {
+                    if let Some(c) = &sel {
+                        self.repair = true;
+                        self.gate = Some(Gate::new(Purpose::Format, &c.id, (), &ctx));
+                        self.notice = None;
+                    }
                 }
-            }
+                ui.label(small_muted("Stuck at a few MB, shows up as a CD, will not format or says write-protected? Repair looks at what is wrong, cleans the drive thoroughly, then formats it with the options above."));
+            });
             ui.add_space(6.0);
             let arrow = if self.advanced { "Hide advanced options" } else { "Advanced options" };
             if widgets::link_button(ui, arrow, true).clicked() {
@@ -378,7 +496,7 @@ impl FormatScreen {
             let t = anim(&ctx, Id::new("fmt-adv"), self.advanced, 0.2);
             if t > 0.01 {
                 ui.set_opacity(t);
-                self.advanced_ui(ui);
+                self.advanced_ui(ui, size);
                 ui.set_opacity(1.0);
             }
         });
@@ -395,6 +513,7 @@ impl FormatScreen {
             let b = Btn::destructive(if self.gate.is_some() { "Checking drive…" } else { "Format!" }).big().enabled(blocker.is_none()).tip(blocker.as_deref().unwrap_or(""));
             if b.show(ui).clicked() {
                 if let Some(c) = &sel {
+                    self.repair = false;
                     self.gate = Some(Gate::new(Purpose::Format, &c.id, (), &ctx));
                     self.notice = None;
                 }
@@ -405,7 +524,7 @@ impl FormatScreen {
         });
     }
 
-    fn advanced_ui(&mut self, ui: &mut Ui) {
+    fn advanced_ui(&mut self, ui: &mut Ui, size: u64) {
         ui.add_space(4.0);
         egui::Grid::new("fmt-adv-grid").num_columns(2).spacing([16.0, 8.0]).show(ui, |ui| {
             ui.label(small_muted("Partition scheme"));
@@ -426,13 +545,28 @@ impl FormatScreen {
                 WipeChoice::Quick => "Quick (clear the partition tables)",
                 WipeChoice::Zero => "Full: overwrite every byte with zeros (slow)",
                 WipeChoice::Random => "Full: overwrite every byte with random data (slow)",
+                WipeChoice::Discard => "Discard (TRIM): tell the drive its blocks are unused (instant, where supported)",
             };
             egui::ComboBox::from_id_salt("wipe").selected_text(wname(self.wipe)).width(300.0).show_ui(ui, |ui| {
-                for w in [WipeChoice::Quick, WipeChoice::Zero, WipeChoice::Random] {
+                for w in [WipeChoice::Quick, WipeChoice::Discard, WipeChoice::Zero, WipeChoice::Random] {
                     ui.selectable_value(&mut self.wipe, w, wname(w));
                 }
             });
             ui.end_row();
+            if matches!(self.wipe, WipeChoice::Zero | WipeChoice::Random) {
+                ui.label(small_muted("Erase passes"));
+                ui.horizontal(|ui| {
+                    egui::ComboBox::from_id_salt("wipe-passes").selected_text(if self.wipe_passes == 1 { "1 pass".to_string() } else { format!("{} passes", self.wipe_passes) }).width(110.0).show_ui(ui, |ui| {
+                        for n in [1u8, 2, 3, 5, 7] {
+                            ui.selectable_value(&mut self.wipe_passes, n, if n == 1 { "1 pass".to_string() } else { format!("{n} passes") });
+                        }
+                    })
+                    .response
+                    .on_hover_text("Every pass but the last writes random data; the last writes what the erase mode says. More passes take proportionally longer. One pass is enough for a modern flash drive; more only matters for old magnetic disks.");
+                    ui.checkbox(&mut self.verify_wipe, "Read it back").on_hover_text("Reads the whole drive afterwards and checks that the erase really stuck. Takes about as long as one pass.");
+                });
+                ui.end_row();
+            }
             ui.label(small_muted("Capacity check"));
             let cname = |c: CapChoice| match c {
                 CapChoice::Off => "Off",
@@ -445,14 +579,74 @@ impl FormatScreen {
                 }
             });
             ui.end_row();
+            ui.label(small_muted("Partition alignment"));
+            let aname = |m: u64| match m {
+                1 => "1 MiB (default)".to_string(),
+                4 => "4 MiB (recommended for SD cards)".to_string(),
+                m => format!("{m} MiB"),
+            };
+            egui::ComboBox::from_id_salt("align").selected_text(aname(self.align_mib)).width(300.0).show_ui(ui, |ui| {
+                for m in [1u64, 4, 8] {
+                    ui.selectable_value(&mut self.align_mib, m, aname(m));
+                }
+            })
+            .response
+            .on_hover_text("Partitions start on multiples of this size. SD cards erase in big blocks (often 4 MiB), so aligned partitions write faster and wear less. Costs at most a few MB.");
+            ui.end_row();
+            ui.label(small_muted("Spare space at the end"));
+            ui.horizontal(|ui| {
+                ui.add(egui::TextEdit::singleline(&mut self.reserve_gb).desired_width(80.0).hint_text(RichText::new("none").color(DIM)).margin(egui::Margin::symmetric(8, 6)))
+                    .on_hover_text("Leave this much of the drive unpartitioned. Flash drives and SD cards use free space to spread wear, so a bit of spare space makes them last longer.");
+                ui.label(small_muted("GB"));
+            });
+            ui.end_row();
         });
+        let can_boot = self.scheme != SchemeChoice::Gpt && self.scheme != SchemeChoice::None;
+        ui.add_enabled_ui(can_boot, |ui| {
+            ui.checkbox(&mut self.bootable, "Make the partition bootable (active flag)")
+                .on_hover_text("MBR only. Marks the first partition active, which some old BIOS computers need before they will start a drive's own boot code. Not needed for storage.");
+        });
+        ui.checkbox(&mut self.verify_result, "Check the result when done")
+            .on_hover_text("Reads the partition table and each filesystem's signature back from the drive, and tells you if the drive did not keep what was written. Takes a second.");
+        ui.add_space(4.0);
+        ui.checkbox(&mut self.second, "Split into two partitions").on_hover_text("For example a Windows-readable partition plus a Linux (ext4) one, or a small FAT32 partition for a bootloader and a big data partition.");
+        if self.second {
+            if self.first_gb.is_empty() && size > 0 {
+                self.first_gb = format!("{:.0}", (size as f64 / 2.0 / 1e9).max(1.0));
+            }
+            egui::Grid::new("fmt-second-grid").num_columns(2).spacing([16.0, 8.0]).show(ui, |ui| {
+                ui.label(small_muted("First partition (the filesystem above)"));
+                ui.horizontal(|ui| {
+                    ui.add(egui::TextEdit::singleline(&mut self.first_gb).desired_width(80.0).margin(egui::Margin::symmetric(8, 6)));
+                    ui.label(small_muted("GB"));
+                });
+                ui.end_row();
+                ui.label(small_muted("Second partition (the rest)"));
+                ui.horizontal(|ui| {
+                    egui::ComboBox::from_id_salt("second-fs").selected_text(self.second_fs.name()).width(110.0).show_ui(ui, |ui| {
+                        for fs in ALL_FS {
+                            if Self::fs_problem(fs, size).is_none() {
+                                ui.selectable_value(&mut self.second_fs, fs, fs.name());
+                            }
+                        }
+                    });
+                    let max = match self.second_fs {
+                        Fs::Fat32 | Fs::Fat16 | Fs::ExFat => 11,
+                        Fs::Ntfs => 32,
+                        Fs::Ext2 | Fs::Ext3 | Fs::Ext4 => 16,
+                    };
+                    ui.add(egui::TextEdit::singleline(&mut self.second_label).desired_width(110.0).hint_text(RichText::new("label").color(DIM)).char_limit(max).margin(egui::Margin::symmetric(8, 6)));
+                });
+                ui.end_row();
+            });
+        }
         if self.cap == CapChoice::Full {
             ui.checkbox(&mut self.fit_real, "If the drive turns out to be fake, format only the part that works");
         }
     }
 
     fn running_ui(&mut self, ui: &mut Ui) {
-        widgets::run_header(ui, Icon::Format, "Formatting");
+        widgets::run_header(ui, Icon::Format, if self.repair { "Repairing" } else { "Formatting" });
         let t = self.target.clone();
         let rows = vec![("Drive", t.map(|c| format!("{} · {} · {}", c.name, c.size_text(), c.drive.path)).unwrap_or_default()), ("Result", self.summary.clone())];
         let stopping = self.run.as_ref().map(|r| r.job.cancel_requested).unwrap_or(false);
@@ -477,8 +671,8 @@ impl FormatScreen {
                 Outcome::Success => {
                     status_mark(ui, Id::new("fmt-mark"), Tone::Success, true);
                     ui.add_space(6.0);
-                    ui.label(semibold_text("Format complete!", 28.0));
-                    ui.label(muted(format!("{tgt} was formatted.")));
+                    ui.label(semibold_text(if self.repair { "Repair complete!" } else { "Format complete!" }, 28.0));
+                    ui.label(muted(format!("{tgt} was {}.", if self.repair { "repaired and formatted" } else { "formatted" })));
                     if let Some(rep) = &self.report {
                         ui.add_space(8.0);
                         ui.allocate_ui(vec2(480.0, 10.0), |ui| report_ui(ui, rep));
@@ -497,7 +691,7 @@ impl FormatScreen {
                 Outcome::Failed(f) => {
                     status_mark(ui, Id::new("fmt-mark"), Tone::Error, true);
                     ui.add_space(6.0);
-                    ui.label(semibold_text("Format failed", 22.0));
+                    ui.label(semibold_text(if self.repair { "Repair failed" } else { "Format failed" }, 22.0));
                     ui.label(muted(format!("{tgt} was not formatted.")));
                     ui.add_space(6.0);
                     ui.allocate_ui(vec2(520.0, 10.0), |ui| {
@@ -518,6 +712,7 @@ impl FormatScreen {
         if again {
             let ctx = ui.ctx().clone();
             self.stage = Stage::Setup;
+            self.repair = false;
             self.run = None;
             self.target = None;
             self.outcome = None;
@@ -581,13 +776,22 @@ impl FormatScreen {
                     WipeChoice::Quick => "",
                     WipeChoice::Zero => " Every byte will be overwritten with zeros, which can take a long time.",
                     WipeChoice::Random => " Every byte will be overwritten with random data, which can take a long time.",
+                    WipeChoice::Discard => " The drive will be told that all its blocks are unused.",
                 };
+                let repair = self.repair;
                 let (_, close) = dialog(ctx, "format-confirm", 460.0, |ui| {
-                    ui.label(heading("Erase and format this drive?"));
+                    ui.label(heading(if repair { "Repair and format this drive?" } else { "Erase and format this drive?" }));
                     ui.add_space(8.0);
                     drive_card(ui, c);
                     ui.add_space(6.0);
                     widgets::kv(ui, "New filesystem", RichText::new(what));
+                    if self.second {
+                        widgets::kv(ui, "Second partition", RichText::new(format!("{}{}, the rest of the drive", self.second_fs.name(), if self.second_label.trim().is_empty() { String::new() } else { format!(", named “{}”", self.second_label.trim()) })));
+                    }
+                    if repair {
+                        ui.add_space(4.0);
+                        ui.label(small_muted("Repair first reads the old layout and says what is wrong, clears the write-protect flag where the system allows it, and wipes leftover partition tables, labels and ISO data from both ends of the drive and from every old partition. Then it formats."));
+                    }
                     ui.add_space(6.0);
                     banner(ui, Tone::Error, "Everything on this drive will be permanently erased.", &format!("This cannot be undone. Check that the name and size above are the drive you mean.{wipe}"), None);
                     for w in &c.warnings {
@@ -595,7 +799,7 @@ impl FormatScreen {
                         banner(ui, Tone::Warn, "", w, None);
                     }
                     dialog_buttons(ui, |ui| {
-                        if Btn::destructive(if rechecking { "Checking…" } else { "Erase and format" }).enabled(!rechecking).show(ui).clicked() {
+                        if Btn::destructive(if rechecking { "Checking…" } else if repair { "Repair and format" } else { "Erase and format" }).enabled(!rechecking).show(ui).clicked() {
                             accept = true;
                         }
                         if Btn::new("Cancel").enabled(!rechecking).show(ui).clicked() {
@@ -640,10 +844,6 @@ impl FormatScreen {
         }
         let _ = drives::allow_virtual;
     }
-}
-
-fn fsmake_auto(bytes: u64) -> Fs {
-    nyforge_core::usbformat::auto_fs(bytes)
 }
 
 fn fs_arg(fs: Fs) -> &'static str {

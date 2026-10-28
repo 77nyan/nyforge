@@ -3,36 +3,39 @@
 # tarball (binaries next to this script) and from a git clone (builds with cargo first).
 # Installs the `nyforge` command and the `nyforge-gui` desktop app.
 #
+# Run it with sudo (it needs to write to /usr/local):
+#
 #   sudo ./install.sh                 install to /usr/local
-#   ./install.sh --user               install to ~/.local (no root needed)
 #   sudo ./install.sh --prefix /opt/nyforge
 #   sudo ./install.sh --uninstall
 set -eu
 
 here=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 prefix=/usr/local
-user=0
 uninstall=0
 
 while [ $# -gt 0 ]; do
   case "$1" in
     --prefix) prefix=$2; shift ;;
     --prefix=*) prefix=${1#--prefix=} ;;
-    --user) user=1 ;;
     --uninstall) uninstall=1 ;;
-    -h|--help) sed -n '2,8p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    -h|--help) sed -n '2,9p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
     *) echo "install.sh: unknown option $1" >&2; exit 2 ;;
   esac
   shift
 done
 
-[ "$user" = 1 ] && prefix=$HOME/.local
+if [ "$(id -u)" != 0 ]; then
+  echo "NyForge has to be installed with sudo. Run:" >&2
+  if [ "$uninstall" = 1 ]; then echo "  sudo ./install.sh --uninstall" >&2; else echo "  sudo ./install.sh" >&2; fi
+  exit 1
+fi
 bin=$prefix/bin
 
 if [ "$uninstall" = 1 ]; then
   rm -f "$bin/nyforge" "$bin/nyforge-gui" "$bin/nyforge-uninstall"
   rm -rf "$prefix/share/doc/nyforge"
-  if [ "$(uname -s)" = Darwin ]; then rm -rf /Applications/NyForge.app "$HOME/Applications/NyForge.app"; fi
+  if [ "$(uname -s)" = Darwin ]; then rm -rf /Applications/NyForge.app; fi
   rm -f "$prefix/share/applications/nyforge.desktop" \
         "$prefix/share/icons/hicolor/256x256/apps/nyforge.png" \
         "$prefix/share/icons/hicolor/scalable/apps/nyforge.svg" \
@@ -65,8 +68,7 @@ else
 fi
 
 if ! mkdir -p "$bin" "$prefix/share/doc/nyforge" 2>/dev/null; then
-  echo "Cannot write to $prefix. To install only for yourself (no password needed) run:  ./install.sh --user" >&2
-  echo "To install for everyone on this computer run:  sudo ./install.sh" >&2
+  echo "Cannot write to $prefix. Run the installer with sudo:  sudo ./install.sh" >&2
   exit 1
 fi
 install -m 0755 "$src/nyforge" "$bin/nyforge"
@@ -85,19 +87,17 @@ cat > "$uninst" <<'UNINSTALL_EOF'
 #!/bin/sh
 # NyForge uninstaller (written by install.sh). Removes NyForge from this computer: the programs, the menu entry, the
 # icons, the documentation and, on macOS, NyForge.app. It never touches your own files or any drive.
-#   nyforge-uninstall        asks first
-#   nyforge-uninstall -y     does not ask
-#   sudo nyforge-uninstall   also removes a copy that was installed for all users
+#   sudo nyforge-uninstall        asks first
+#   sudo nyforge-uninstall -y     does not ask
 set -u
 yes=0
 [ "${1:-}" = "-y" ] && yes=1
 mine="@PREFIX@"
-home_dir=${HOME:-}
-if [ -n "${SUDO_USER:-}" ] && [ "$SUDO_USER" != root ]; then
-  home_dir=$(getent passwd "$SUDO_USER" 2>/dev/null | cut -d: -f6)
-  [ -n "$home_dir" ] || home_dir=${HOME:-}
+if [ "$(id -u)" != 0 ]; then
+  echo "Run it with sudo:  sudo nyforge-uninstall" >&2
+  exit 1
 fi
-prefixes="$mine /usr/local ${home_dir:+$home_dir/.local}"
+prefixes="$mine /usr/local"
 if [ "$yes" = 0 ]; then
   printf 'Remove NyForge from this computer? [y/N] '
   read -r a || a=n
@@ -112,7 +112,7 @@ rm_path() {
     echo "removed $1"
     removed=1
   else
-    echo "could not remove $1 (try: sudo nyforge-uninstall)" >&2
+    echo "could not remove $1 (run it with sudo)" >&2
     failed=1
   fi
 }
@@ -131,7 +131,6 @@ done
 rm_path /usr/share/polkit-1/actions/org.nyforge.engine.policy
 if [ "$(uname -s)" = Darwin ]; then
   rm_path /Applications/NyForge.app
-  [ -n "$home_dir" ] && rm_path "$home_dir/Applications/NyForge.app"
 fi
 # Last, this script itself (a running shell script can be deleted safely).
 for p in $prefixes; do rm_path "$p/bin/nyforge-uninstall"; done
@@ -169,7 +168,7 @@ fi
 
 # macOS: put the double-clickable app in Applications.
 if [ "$(uname -s)" = Darwin ] && [ -d "$assets/NyForge.app" ]; then
-  if [ "$user" = 1 ]; then appdir=$HOME/Applications; else appdir=/Applications; fi
+  appdir=/Applications
   mkdir -p "$appdir"
   rm -rf "$appdir/NyForge.app"
   cp -R "$assets/NyForge.app" "$appdir/NyForge.app"

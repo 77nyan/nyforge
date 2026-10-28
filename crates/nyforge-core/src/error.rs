@@ -72,6 +72,19 @@ fn errno_is_hardware(c: i32) -> bool {
     hw
 }
 
+/// Did this I/O error come from a drive that is no longer there (unplugged, port reset)?
+pub fn io_is_gone(e: &std::io::Error) -> bool {
+    if crate::sys::is_device_gone(e) {
+        return true;
+    }
+    #[cfg(unix)]
+    {
+        return e.raw_os_error().is_some_and(errno_is_gone);
+    }
+    #[cfg(not(unix))]
+    false
+}
+
 impl NyError {
     pub fn new(kind: ErrorKind, message: impl Into<String>) -> Self {
         Self { kind, message: message.into(), hint: None }

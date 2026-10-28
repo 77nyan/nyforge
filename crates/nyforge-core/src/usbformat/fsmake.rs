@@ -178,15 +178,44 @@ fn tool_candidates(fs: Fs) -> &'static [(&'static str, &'static [&'static str])]
         Fs::Ext2 => &[("mkfs.ext2", &[]), ("mke2fs", &["-t", "ext2"])],
         Fs::Ext3 => &[("mkfs.ext3", &[]), ("mke2fs", &["-t", "ext3"])],
         Fs::Ext4 => &[("mkfs.ext4", &[]), ("mke2fs", &["-t", "ext4"])],
-        Fs::Ntfs => &[("mkfs.ntfs", &[]), ("mkntfs", &[])],
+        Fs::Ntfs => &[("mkfs.ntfs", &[]), ("mkntfs", &[]), ("mkfs.ntfs-3g", &[]), ("mkntfs-3g", &[])],
         _ => &[],
     }
 }
 
-fn package_hint(fs: Fs) -> &'static str {
+fn package_hint(fs: Fs) -> String {
     match fs {
-        Fs::Ext2 | Fs::Ext3 | Fs::Ext4 => "Install e2fsprogs.",
-        _ => "Install ntfs-3g (some systems call it ntfsprogs).",
+        Fs::Ext2 | Fs::Ext3 | Fs::Ext4 => "Install e2fsprogs.".to_string(),
+        _ => {
+            let os_release = std::fs::read_to_string("/etc/os-release").unwrap_or_default();
+            format!("Install {}.", ntfs_package_for(&os_release))
+        }
+    }
+}
+
+/// The package that has `mkntfs` / `mkfs.ntfs` on this distribution, read from `/etc/os-release`. On Arch (CachyOS,
+/// Manjaro, EndeavourOS, Omarchy) the `ntfs-3g` package holds only the mount driver: the formatter is in `ntfsprogs`.
+/// Debian and Ubuntu put it in `ntfs-3g`; Fedora and openSUSE in `ntfsprogs`.
+pub fn ntfs_package_for(os_release: &str) -> &'static str {
+    let mut ids: Vec<String> = vec![];
+    for line in os_release.lines() {
+        if let Some(v) = line.strip_prefix("ID=").or_else(|| line.strip_prefix("ID_LIKE=")) {
+            ids.extend(v.trim_matches('"').split_whitespace().map(|w| w.to_ascii_lowercase()));
+        }
+    }
+    let has = |names: &[&str]| ids.iter().any(|i| names.contains(&i.as_str()));
+    if has(&["arch", "cachyos", "manjaro", "endeavouros", "arcolinux", "garuda", "artix", "omarchy"]) {
+        "ntfsprogs"
+    } else if has(&["debian", "ubuntu", "linuxmint", "pop", "raspbian"]) {
+        "ntfs-3g"
+    } else if has(&["fedora", "rhel", "centos", "opensuse", "suse", "sles", "opensuse-tumbleweed", "opensuse-leap"]) {
+        "ntfsprogs"
+    } else if has(&["alpine"]) {
+        "ntfs-3g-progs"
+    } else if has(&["void"]) {
+        "ntfs-3g"
+    } else {
+        "ntfsprogs (on Debian and Ubuntu: ntfs-3g)"
     }
 }
 
@@ -194,7 +223,7 @@ fn on_path(name: &str) -> Option<PathBuf> {
     let path = std::env::var_os("PATH")?;
     let mut dirs: Vec<PathBuf> = std::env::split_paths(&path).collect();
     // sudo and pkexec often strip sbin from PATH, which is exactly where the mkfs tools live.
-    for extra in ["/sbin", "/usr/sbin", "/usr/local/sbin"] {
+    for extra in ["/sbin", "/usr/sbin", "/usr/local/sbin", "/usr/bin", "/bin", "/usr/local/bin"] {
         dirs.push(PathBuf::from(extra));
     }
     dirs.into_iter().map(|d| d.join(name)).find(|p| p.is_file())
@@ -369,6 +398,12 @@ pub fn windows_ntfs_env(job: &ToolJob, disk: u32, number: u32) -> Vec<(&'static 
 fn run_windows_ntfs(job: &ToolJob, disk: u32, number: u32) -> Result<()> {
     use std::os::windows::process::CommandExt;
     const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+    // `diskpart` first: it formats the partition itself and does not need Windows to have made a volume object for
+    // it yet (`Format-Volume` fails with "No matching MSFT_Volume objects" on a freshly written partition table).
+    let first = match crate::winnative::format_partition(disk, number, Fs::Ntfs, job.label, job.spec.cluster) {
+        Ok(()) => return Ok(()),
+        Err(e) => e.message,
+    };
     let mut cmd = Command::new("powershell");
     cmd.args(["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command", WINDOWS_NTFS_SCRIPT]).creation_flags(CREATE_NO_WINDOW);
     for (k, val) in windows_ntfs_env(job, disk, number) {
@@ -377,7 +412,10 @@ fn run_windows_ntfs(job: &ToolJob, disk: u32, number: u32) -> Result<()> {
     let out = cmd.output().map_err(|e| NyError::from_io(&e, "running PowerShell to format the volume"))?;
     if !out.status.success() {
         let msg = String::from_utf8_lossy(&out.stderr).trim().to_string();
-        return Err(NyError::other(format!("Windows could not format the NTFS volume: {}", msg.lines().next().unwrap_or("no message"))));
+        return Err(NyError::other(format!(
+            "Windows could not format the NTFS volume. diskpart: {first} PowerShell: {}",
+            msg.lines().next().unwrap_or("no message")
+        )));
     }
     Ok(())
 }
@@ -423,6 +461,17 @@ pub fn wait_for_node(node: &Path) -> Result<()> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn the_package_with_mkntfs_is_named_per_distribution() {
+        assert_eq!(ntfs_package_for("NAME=\"CachyOS Linux\"\nID=cachyos\nID_LIKE=arch\n"), "ntfsprogs");
+        assert_eq!(ntfs_package_for("ID=arch\n"), "ntfsprogs");
+        assert_eq!(ntfs_package_for("ID=endeavouros\nID_LIKE=\"arch\"\n"), "ntfsprogs");
+        assert_eq!(ntfs_package_for("ID=ubuntu\nID_LIKE=debian\n"), "ntfs-3g");
+        assert_eq!(ntfs_package_for("ID=linuxmint\nID_LIKE=\"ubuntu debian\"\n"), "ntfs-3g");
+        assert_eq!(ntfs_package_for("ID=fedora\n"), "ntfsprogs");
+        assert!(ntfs_package_for("").contains("ntfsprogs"));
+    }
+
     use super::*;
 
     #[test]

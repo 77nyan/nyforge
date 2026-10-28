@@ -104,12 +104,22 @@ fn use_prompt() -> bool {
 
 /// Start the engine with these arguments (`--json` is added here).
 pub fn spawn(args: Vec<String>, ctx: egui::Context) -> Job {
+    spawn_with(args, ctx, true)
+}
+
+/// Like `spawn`, but never asks for administrator access (for jobs that only read the person's own files).
+pub fn spawn_as_user(args: Vec<String>, ctx: egui::Context) -> Job {
+    spawn_with(args, ctx, false)
+}
+
+fn spawn_with(args: Vec<String>, ctx: egui::Context, elevate: bool) -> Job {
     let (tx, rx) = channel::<Msg>();
     let engine = engine_path();
     let fail = |tx: &Sender<Msg>, ctx: &egui::Context, why: String| {
         let _ = tx.send(Msg::SpawnFailed(why));
         ctx.request_repaint();
     };
+    let use_prompt = || elevate && use_prompt();
     if use_prompt() && cfg!(target_os = "macos") {
         return spawn_macos(&engine, &args, tx, rx, ctx);
     }

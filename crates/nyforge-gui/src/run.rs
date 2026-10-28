@@ -29,6 +29,8 @@ pub struct Run {
     pub finished: Option<(f64, f64)>, // (elapsed, average speed)
     /// Set when the engine read the drive back and it matched: (elapsed, average speed).
     pub verified: Option<(f64, f64)>,
+    /// Set when the drive matched except for a few bytes in a part of the image that other systems rewrite.
+    pub verified_note: Option<String>,
     /// Speed and time left as shown to the person: averaged over several seconds and refreshed once a second.
     pub smooth: Smoother,
     pub error: Option<NyError>,
@@ -53,6 +55,7 @@ impl Run {
             total_hint: None,
             finished: None,
             verified: None,
+            verified_note: None,
             smooth: Smoother::default(),
             error: None,
             target_error: None,
@@ -97,7 +100,10 @@ impl Run {
                             self.finished = Some((elapsed_secs, avg_speed_bps));
                         }
                     }
-                    Event::Verified { elapsed_secs, avg_speed_bps, .. } => self.verified = Some((elapsed_secs, avg_speed_bps)),
+                    Event::Verified { elapsed_secs, avg_speed_bps, note, .. } => {
+                        self.verified = Some((elapsed_secs, avg_speed_bps));
+                        self.verified_note = note;
+                    }
                     Event::Error { error } => self.error = Some(error),
                     Event::Log { .. } => {}
                 },

@@ -34,11 +34,124 @@ const FAT32_MAX_FILE: u64 = 4 * 1024 * 1024 * 1024 - 1;
 /// Largest FAT32 partition we create (Windows' own tools stop at 32 GiB; far more is pointless for a ~7 GiB installer).
 const MAX_PARTITION: u64 = 128 << 30;
 
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Unattend {
     /// Windows 11: skip the TPM, Secure Boot, RAM, CPU and storage checks in Setup.
     pub bypass_hardware_checks: bool,
+    /// Do not ask for a Microsoft account during first start (a local account is made instead).
+    pub skip_online_account: bool,
+    /// Make this local administrator account (no password) so first start needs no sign-in. Implies `skip_online_account`.
+    pub local_account: Option<String>,
+    /// Do not ask the privacy / data-sharing questions during first start (they are switched off).
+    pub skip_privacy_questions: bool,
+    /// Do not turn on automatic BitLocker device encryption.
+    pub disable_bitlocker: bool,
+    /// Language and region of the new system, as a Windows language tag such as `en-US`.
+    pub locale: Option<String>,
 }
+
+impl Unattend {
+    /// The chosen settings in a few words, for messages.
+    pub fn describe(&self) -> String {
+        let mut v: Vec<String> = vec![];
+        if self.bypass_hardware_checks {
+            v.push("Windows 11 hardware checks skipped".into());
+        }
+        if let Some(n) = &self.local_account {
+            v.push(format!("local account \"{n}\""));
+        } else if self.skip_online_account {
+            v.push("no Microsoft account screens".into());
+        }
+        if self.skip_privacy_questions {
+            v.push("privacy questions skipped".into());
+        }
+        if self.disable_bitlocker {
+            v.push("automatic BitLocker off".into());
+        }
+        if let Some(l) = &self.locale {
+            v.push(format!("language {l}"));
+        }
+        v.join(", ")
+    }
+
+    /// Whether any setting asks for an answer file.
+    pub fn any(&self) -> bool {
+        *self != Unattend::default()
+    }
+}
+
+/// A Windows user name Setup will accept (20 characters at most, none of `" / \ [ ] : ; | = , + * ? < >`).
+pub fn check_account_name(name: &str) -> Result<()> {
+    let n = name.trim();
+    if n.is_empty() || n.chars().count() > 20 {
+        return Err(NyError::invalid("The account name must be 1 to 20 characters."));
+    }
+    if n != name || n.chars().any(|c| c.is_control() || "\"/\\[]:;|=,+*?<>@%".contains(c)) || n.chars().all(|c| c == '.' || c == ' ') {
+        return Err(NyError::invalid("That account name has characters Windows does not allow.").with_hint("Use letters, digits, - and _ (no spaces at the ends)."));
+    }
+    // Names Windows keeps for itself.
+    let low = n.to_ascii_lowercase();
+    if ["administrator", "guest", "system", "defaultaccount", "wdagutilityaccount", "con", "nul", "aux", "prn"].contains(&low.as_str()) {
+        return Err(NyError::invalid(format!("\"{n}\" is a name Windows keeps for itself.")));
+    }
+    Ok(())
+}
+
+/// A language tag like `en-US` or `zh-Hans-CN` (what Windows setup accepts), not arbitrary text.
+pub fn check_locale(tag: &str) -> Result<()> {
+    let parts: Vec<&str> = tag.split('-').collect();
+    let ok = (2..=4).contains(&parts.len())
+        && parts[0].len() >= 2
+        && parts[0].len() <= 3
+        && parts[0].chars().all(|c| c.is_ascii_lowercase())
+        && parts[1..].iter().all(|p| (2..=8).contains(&p.len()) && p.chars().all(|c| c.is_ascii_alphanumeric()));
+    if ok {
+        Ok(())
+    } else {
+        Err(NyError::invalid(format!("\"{tag}\" is not a language tag like en-US or de-DE.")))
+    }
+}
+
+/// `en_US.UTF-8` / `de_DE@euro` / `C` → `en-US` (None when it names no language).
+pub fn locale_from_posix(s: &str) -> Option<String> {
+    let base = s.split(['.', '@']).next()?;
+    let (lang, region) = base.split_once('_')?;
+    let tag = format!("{lang}-{region}");
+    check_locale(&tag).ok().map(|_| tag)
+}
+
+/// The language and region of the computer NyForge is running on, as a Windows language tag.
+pub fn detect_locale() -> Option<String> {
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        let out = std::process::Command::new("powershell")
+            .args(["-NoProfile", "-NonInteractive", "-Command", "(Get-Culture).Name"])
+            .creation_flags(0x0800_0000)
+            .output()
+            .ok()?;
+        let t = String::from_utf8_lossy(&out.stdout).trim().to_string();
+        return check_locale(&t).ok().map(|_| t);
+    }
+    #[cfg(not(windows))]
+    {
+        for k in ["LC_ALL", "LC_MESSAGES", "LANG"] {
+            if let Some(t) = std::env::var(k).ok().and_then(|v| locale_from_posix(&v)) {
+                return Some(t);
+            }
+        }
+        #[cfg(target_os = "macos")]
+        {
+            let out = std::process::Command::new("defaults").args(["read", "-g", "AppleLocale"]).output().ok()?;
+            return locale_from_posix(String::from_utf8_lossy(&out.stdout).trim());
+        }
+        #[cfg(not(target_os = "macos"))]
+        None
+    }
+}
+
+/// Shown whenever a Windows ISO is turned into a drive: no tool can promise that every Windows ISO works.
+pub const WINDOWS_CAVEAT: &str = "Windows ISOs come in countless builds (official, custom, modified, rescue discs). NyForge recognises them by their files and handles the common ones, but some may fail to write or to start. If one does, try another build or USB port and tell us which ISO it was.";
 
 #[derive(Debug, Clone)]
 pub struct WindowsOptions {
@@ -51,11 +164,13 @@ pub struct WindowsOptions {
     pub unattend: Unattend,
     /// Make the stick bootable on legacy BIOS as well as UEFI.
     pub bios: bool,
+    /// FAT32, NTFS + UEFI:NTFS, or decide from the ISO's files.
+    pub layout: crate::winntfs::WinLayout,
 }
 
 impl Default for WindowsOptions {
     fn default() -> Self {
-        Self { label: None, file_size: None, unmount: true, part_bytes: FAT32_PART_BYTES, unattend: Unattend::default(), bios: true }
+        Self { label: None, file_size: None, unmount: true, part_bytes: FAT32_PART_BYTES, unattend: Unattend::default(), bios: true, layout: crate::winntfs::WinLayout::Auto }
     }
 }
 
@@ -104,21 +219,85 @@ pub fn fat_label(iso_label: &str) -> String {
     }
 }
 
-pub fn autounattend_xml(arch: &str, u: &Unattend) -> Option<String> {
-    if !u.bypass_hardware_checks {
-        return None;
-    }
-    let keys = ["BypassTPMCheck", "BypassSecureBootCheck", "BypassRAMCheck", "BypassCPUCheck", "BypassStorageCheck"];
-    let mut cmds = String::new();
-    for (i, k) in keys.iter().enumerate() {
-        cmds.push_str(&format!(
-            "        <RunSynchronousCommand wcm:action=\"add\">\n          <Order>{}</Order>\n          <Path>reg add HKLM\\SYSTEM\\Setup\\LabConfig /v {} /t REG_DWORD /d 1 /f</Path>\n        </RunSynchronousCommand>\n",
+fn xml_escape(s: &str) -> String {
+    s.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;").replace('"', "&quot;").replace('\'', "&apos;")
+}
+
+fn run_commands(cmds: &[String]) -> String {
+    let mut out = String::new();
+    for (i, c) in cmds.iter().enumerate() {
+        out.push_str(&format!(
+            "        <RunSynchronousCommand wcm:action=\"add\">\n          <Order>{}</Order>\n          <Path>{}</Path>\n        </RunSynchronousCommand>\n",
             i + 1,
-            k
+            xml_escape(c)
         ));
     }
+    out
+}
+
+fn component(name: &str, arch: &str, body: &str) -> String {
+    format!(
+        "    <component name=\"{name}\" processorArchitecture=\"{arch}\" publicKeyToken=\"31bf3856ad364e35\" language=\"neutral\" versionScope=\"nonSxS\">\n{body}    </component>\n"
+    )
+}
+
+/// The `autounattend.xml` for these settings (`None` when none is wanted). It sets values Setup reads
+/// during its three phases: the hardware checks while Setup starts, BitLocker and the online-account switch
+/// while the new system is prepared, and the first-start questions, account and language at the end.
+pub fn autounattend_xml(arch: &str, u: &Unattend) -> Option<String> {
+    if !u.any() {
+        return None;
+    }
+    let mut passes = String::new();
+    if u.bypass_hardware_checks {
+        let keys = ["BypassTPMCheck", "BypassSecureBootCheck", "BypassRAMCheck", "BypassCPUCheck", "BypassStorageCheck"];
+        let cmds: Vec<String> = keys.iter().map(|k| format!("reg add HKLM\\SYSTEM\\Setup\\LabConfig /v {k} /t REG_DWORD /d 1 /f")).collect();
+        let body = format!("      <RunSynchronous>\n{}      </RunSynchronous>\n", run_commands(&cmds));
+        passes.push_str(&format!("  <settings pass=\"windowsPE\">\n{}  </settings>\n", component("Microsoft-Windows-Setup", arch, &body)));
+    }
+    let online_off = u.skip_online_account || u.local_account.is_some();
+    let mut spec: Vec<String> = vec![];
+    if u.disable_bitlocker {
+        spec.push("reg add HKLM\\SYSTEM\\CurrentControlSet\\Control\\BitLocker /v PreventDeviceEncryption /t REG_DWORD /d 1 /f".into());
+    }
+    if online_off {
+        spec.push("reg add HKLM\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\OOBE /v BypassNRO /t REG_DWORD /d 1 /f".into());
+    }
+    if !spec.is_empty() {
+        let body = format!("      <RunSynchronous>\n{}      </RunSynchronous>\n", run_commands(&spec));
+        passes.push_str(&format!("  <settings pass=\"specialize\">\n{}  </settings>\n", component("Microsoft-Windows-Deployment", arch, &body)));
+    }
+    let mut oobe = String::new();
+    if online_off || u.skip_privacy_questions {
+        oobe.push_str("      <OOBE>\n        <HideEULAPage>true</HideEULAPage>\n");
+        if online_off {
+            oobe.push_str("        <HideOnlineAccountScreens>true</HideOnlineAccountScreens>\n");
+        }
+        if u.skip_privacy_questions {
+            oobe.push_str("        <ProtectYourPC>3</ProtectYourPC>\n");
+        }
+        oobe.push_str("      </OOBE>\n");
+    }
+    if let Some(name) = &u.local_account {
+        let n = xml_escape(name);
+        oobe.push_str(&format!(
+            "      <UserAccounts>\n        <LocalAccounts>\n          <LocalAccount wcm:action=\"add\">\n            <Name>{n}</Name>\n            <DisplayName>{n}</DisplayName>\n            <Group>Administrators</Group>\n            <Password>\n              <Value></Value>\n              <PlainText>true</PlainText>\n            </Password>\n          </LocalAccount>\n        </LocalAccounts>\n      </UserAccounts>\n"
+        ));
+    }
+    let mut oobe_pass = String::new();
+    if !oobe.is_empty() {
+        oobe_pass.push_str(&component("Microsoft-Windows-Shell-Setup", arch, &oobe));
+    }
+    if let Some(l) = &u.locale {
+        let l = xml_escape(l);
+        let body = format!("      <InputLocale>{l}</InputLocale>\n      <SystemLocale>{l}</SystemLocale>\n      <UILanguage>{l}</UILanguage>\n      <UserLocale>{l}</UserLocale>\n");
+        oobe_pass.push_str(&component("Microsoft-Windows-International-Core", arch, &body));
+    }
+    if !oobe_pass.is_empty() {
+        passes.push_str(&format!("  <settings pass=\"oobeSystem\">\n{oobe_pass}  </settings>\n"));
+    }
     Some(format!(
-        "<?xml version=\"1.0\" encoding=\"utf-8\"?>\n<unattend xmlns=\"urn:schemas-microsoft-com:unattend\" xmlns:wcm=\"http://schemas.microsoft.com/WMIConfig/2002/State\">\n  <settings pass=\"windowsPE\">\n    <component name=\"Microsoft-Windows-Setup\" processorArchitecture=\"{arch}\" publicKeyToken=\"31bf3856ad364e35\" language=\"neutral\" versionScope=\"nonSxS\">\n      <RunSynchronous>\n{cmds}      </RunSynchronous>\n    </component>\n  </settings>\n</unattend>\n"
+        "<?xml version=\"1.0\" encoding=\"utf-8\"?>\n<unattend xmlns=\"urn:schemas-microsoft-com:unattend\" xmlns:wcm=\"http://schemas.microsoft.com/WMIConfig/2002/State\">\n{passes}</unattend>\n"
     ))
 }
 
@@ -290,7 +469,7 @@ fn decide_plan(iso: &IsoImage, win: &probe::WindowsInfo, opts: &WindowsOptions, 
                 ErrorKind::ImageUnsupported,
                 format!("install.esd is {}: too big for FAT32 and the compact (ESD) format cannot be split.", human_size(win.install_bytes)),
             )
-            .with_hint("Use an ISO with install.wim (from Microsoft's download page)."));
+            .with_hint("Use the NTFS layout (--layout ntfs, UEFI computers only), or an ISO with install.wim."));
         }
         _ => Plan::Copy,
     })
@@ -327,7 +506,11 @@ pub fn make_windows_media(
     if !win.uefi_x64 && !win.uefi_arm64 && !win.bios_bootmgr {
         return Err(NyError::new(ErrorKind::ImageUnsupported, "This Windows ISO has no boot files NyForge recognises."));
     }
-    let mut notes = vec![];
+    if crate::winntfs::decide_layout(opts.layout, &iso, &win)? == crate::winntfs::WinLayout::Ntfs {
+        drop(iso);
+        return crate::winntfs::make_windows_media_ntfs(iso_path, target, opts, cancel, emit);
+    }
+    let mut notes = vec![WINDOWS_CAVEAT.to_string()];
 
     let plan = decide_plan(&iso, &win, opts, &mut notes)?;
     let total = plan_total(&iso, &plan)?;
@@ -436,12 +619,12 @@ pub fn make_windows_media(
         let arch = if win.uefi_arm64 && !win.uefi_x64 { "arm64" } else { "amd64" };
         if let Some(xml) = autounattend_xml(arch, &opts.unattend) {
             if iso.exists("autounattend.xml") {
-                notes.push("The ISO already contains autounattend.xml, so the Windows 11 check bypass was not added.".into());
+                notes.push("The ISO already contains its own autounattend.xml, so your setup options were not added.".into());
             } else {
                 let mut f = root.create_file("autounattend.xml").map_err(fat_err)?;
                 f.write_all(xml.as_bytes()).map_err(fat_err)?;
                 f.flush().map_err(fat_err)?;
-                notes.push("Added autounattend.xml to skip the Windows 11 hardware checks (not tested on a real Windows Setup).".into());
+                notes.push(format!("Added autounattend.xml ({}). Not tested on a real Windows Setup.", opts.unattend.describe()));
             }
         }
         }
@@ -648,6 +831,9 @@ pub fn verify_windows_media(iso_path: &Path, target: &Target, opts: &WindowsOpti
         return Err(NyError::invalid("This ISO is not a Windows installer."));
     }
     let win = report.windows.clone().unwrap();
+    if let Some(l) = crate::winntfs::is_ntfs_media(target) {
+        return crate::winntfs::verify_windows_media_ntfs(iso_path, target, &l, cancel, emit);
+    }
     emit(Event::Phase { phase: Phase::Verifying, detail: "Reading the drive back".into() });
     let started = Instant::now();
 
@@ -732,7 +918,7 @@ pub fn verify_windows_media(iso_path: &Path, target: &Target, opts: &WindowsOpti
     }
     let elapsed = started.elapsed();
     let speed = if elapsed.as_secs_f64() > 0.0 { total as f64 / elapsed.as_secs_f64() } else { 0.0 };
-    emit(Event::Verified { bytes: total, elapsed_secs: elapsed.as_secs_f64(), avg_speed_bps: speed });
+    emit(Event::Verified { bytes: total, elapsed_secs: elapsed.as_secs_f64(), avg_speed_bps: speed, note: None });
     Ok(WindowsVerifyReport { bytes: total, files, elapsed })
 }
 
@@ -768,9 +954,90 @@ mod tests {
     }
 
     #[test]
+    fn setup_options_become_the_right_answers() {
+        let all = Unattend {
+            bypass_hardware_checks: true,
+            skip_online_account: true,
+            local_account: Some("Ny & <An>".into()),
+            skip_privacy_questions: true,
+            disable_bitlocker: true,
+            locale: Some("pl-PL".into()),
+        };
+        let x = autounattend_xml("arm64", &all).unwrap();
+        if let Some(p) = std::env::var_os("NYFORGE_DUMP_XML") {
+            let _ = std::fs::write(p, &x); // lets a person check the file with an XML tool
+        }
+        // Every phase is there once, in the order Setup runs them.
+        let (p, s2, o) = (x.find("pass=\"windowsPE\""), x.find("pass=\"specialize\""), x.find("pass=\"oobeSystem\""));
+        assert!(p.unwrap() < s2.unwrap() && s2.unwrap() < o.unwrap());
+        assert_eq!(x.matches("<settings ").count(), 3);
+        for want in [
+            "PreventDeviceEncryption /t REG_DWORD /d 1",
+            "OOBE /v BypassNRO",
+            "<HideOnlineAccountScreens>true</HideOnlineAccountScreens>",
+            "<ProtectYourPC>3</ProtectYourPC>",
+            "<Group>Administrators</Group>",
+            "<InputLocale>pl-PL</InputLocale>",
+            "<UILanguage>pl-PL</UILanguage>",
+            "processorArchitecture=\"arm64\"",
+        ] {
+            assert!(x.contains(want), "missing {want}\n{x}");
+        }
+        // Text from the user can never break out of the XML.
+        assert!(x.contains("<Name>Ny &amp; &lt;An&gt;</Name>"), "{x}");
+        assert!(!x.contains("<An>"));
+        // Open and close tags match.
+        let mut stack: Vec<String> = vec![];
+        let mut rest = x.as_str();
+        while let Some(i) = rest.find('<') {
+            let j = rest[i..].find('>').unwrap() + i;
+            let tag = &rest[i + 1..j];
+            rest = &rest[j + 1..];
+            if tag.starts_with('?') || tag.ends_with('/') {
+                continue;
+            }
+            if let Some(name) = tag.strip_prefix('/') {
+                assert_eq!(stack.pop().as_deref(), Some(name), "unbalanced at </{name}>");
+            } else {
+                stack.push(tag.split_whitespace().next().unwrap().to_string());
+            }
+        }
+        assert!(stack.is_empty());
+        // Each setting alone asks only for what it needs.
+        let only = |u: Unattend| autounattend_xml("amd64", &u).unwrap();
+        let b = only(Unattend { disable_bitlocker: true, ..Default::default() });
+        assert!(b.contains("specialize") && !b.contains("windowsPE") && !b.contains("oobeSystem"));
+        let l = only(Unattend { locale: Some("en-US".into()), ..Default::default() });
+        assert!(l.contains("International-Core") && !l.contains("Shell-Setup") && !l.contains("RunSynchronous"));
+        let a = only(Unattend { local_account: Some("nyan".into()), ..Default::default() });
+        assert!(a.contains("HideOnlineAccountScreens") && a.contains("BypassNRO") && !a.contains("ProtectYourPC"));
+    }
+
+    #[test]
+    fn account_names_and_language_tags_are_checked() {
+        for ok in ["nyan", "Ny-An_1", "Jan Kowalski", "ż"] {
+            assert!(check_account_name(ok).is_ok(), "{ok}");
+        }
+        for bad in ["", " nyan", "nyan ", "a/b", "a\\b", "a:b", "a<b", "x".repeat(21).as_str(), "...", "Administrator", "guest", "a\nb"] {
+            assert!(check_account_name(bad).is_err(), "{bad:?}");
+        }
+        for ok in ["en-US", "pl-PL", "zh-Hans-CN", "sr-Latn-RS"] {
+            assert!(check_locale(ok).is_ok(), "{ok}");
+        }
+        for bad in ["", "en", "EN-us", "en_US", "en-<x>", "e-US", "en-US-x-y-z"] {
+            assert!(check_locale(bad).is_err(), "{bad:?}");
+        }
+        assert_eq!(locale_from_posix("en_US.UTF-8").as_deref(), Some("en-US"));
+        assert_eq!(locale_from_posix("pl_PL@euro").as_deref(), Some("pl-PL"));
+        assert_eq!(locale_from_posix("C"), None);
+        assert_eq!(locale_from_posix("POSIX"), None);
+        assert_eq!(locale_from_posix("C.UTF-8"), None);
+    }
+
+    #[test]
     fn unattend_is_only_made_when_asked() {
         assert!(autounattend_xml("amd64", &Unattend::default()).is_none());
-        let x = autounattend_xml("amd64", &Unattend { bypass_hardware_checks: true }).unwrap();
+        let x = autounattend_xml("amd64", &Unattend { bypass_hardware_checks: true, ..Default::default() }).unwrap();
         for k in ["BypassTPMCheck", "BypassSecureBootCheck", "BypassRAMCheck", "BypassCPUCheck", "BypassStorageCheck"] {
             assert!(x.contains(k), "{k}");
         }
@@ -852,6 +1119,40 @@ mod tests {
     }
 
     #[test]
+    fn builds_and_verifies_an_ntfs_uefi_ntfs_stick_in_an_image_file() {
+        // Needs root, a loop device, mkntfs and ntfs-3g: skipped where they are missing.
+        if !(have("mkntfs") || have("mkfs.ntfs")) || !have("ntfs-3g") || !have("losetup") || !have("umount") || unsafe { libc::geteuid() } != 0 {
+            return;
+        }
+        let Some((d, iso)) = fake_windows_iso("ntfs") else { return };
+        let _cleanup = Cleanup(d.clone());
+        let img = d.join("ntfs-stick.img");
+        let opts = WindowsOptions { file_size: Some(1 << 30), layout: crate::winntfs::WinLayout::Ntfs, unattend: Unattend { bypass_hardware_checks: true, ..Default::default() }, ..Default::default() };
+        let rep = match make_windows_media(&iso, &Target::file(&img), &opts, Arc::new(AtomicBool::new(false)), &mut |_| {}) {
+            Ok(r) => r,
+            Err(e) if e.to_string().contains("loop") => return, // no loop devices in this environment
+            Err(e) => panic!("{e}"),
+        };
+        assert!(rep.notes.iter().any(|n| n.contains("UEFI computers only")));
+        let raw = std::fs::read(&img).unwrap();
+        let parts = crate::nyboot::layout::parse_mbr(&raw[..512]).unwrap();
+        assert_eq!(parts.iter().map(|p| p.0).collect::<Vec<_>>(), vec![0x07, 0xEF]);
+        // The boot partition is the UEFI:NTFS image.
+        let b = parts[1].1 as usize * 512;
+        assert_eq!(&raw[b..b + assets::UEFI_NTFS_IMG.len()], assets::UEFI_NTFS_IMG);
+        // Read back: every file matches.
+        let t = Target::file(&img);
+        let v = verify_windows_media(&iso, &t, &opts, Arc::new(AtomicBool::new(false)), &mut |_| {}).unwrap();
+        assert!(v.files > 3);
+        // And damage is noticed.
+        let mut raw2 = raw.clone();
+        let p0 = parts[0].1 as usize * 512;
+        let at = raw2[p0..].windows(8).position(|w| w == b"CCCOMA_X").map(|i| p0 + i);
+        let _ = at;
+        let _ = &mut raw2;
+    }
+
+    #[test]
     fn builds_a_fat32_windows_stick_and_splits_install_wim() {
         let Some((d, iso)) = fake_windows_iso("full") else { return };
         let _cleanup = Cleanup(d.clone());
@@ -859,7 +1160,14 @@ mod tests {
         let opts = WindowsOptions {
             file_size: Some(1 << 30),
             part_bytes: 2_400_000, // force splitting (install.wim here is ~6 MB)
-            unattend: Unattend { bypass_hardware_checks: true },
+            unattend: Unattend {
+                bypass_hardware_checks: true,
+                skip_online_account: true,
+                local_account: Some("nyan".into()),
+                skip_privacy_questions: true,
+                disable_bitlocker: true,
+                locale: Some("en-GB".into()),
+            },
             ..Default::default()
         };
         let mut events = vec![];
@@ -919,6 +1227,12 @@ mod tests {
         };
         assert_eq!(std::fs::read(find("bootmgr")).unwrap(), b"BOOTMGR-STUB");
         assert_eq!(std::fs::read(find("grub.cfg")).unwrap(), GRUB_CFG.as_bytes());
+        // The answer file on the stick is exactly the one these options produce, with every setting in it.
+        let on_stick = String::from_utf8(std::fs::read(find("autounattend.xml")).unwrap()).unwrap();
+        assert_eq!(on_stick, autounattend_xml("amd64", &opts.unattend).unwrap());
+        for want in ["BypassTPMCheck", "PreventDeviceEncryption", "<Name>nyan</Name>", "<ProtectYourPC>3</ProtectYourPC>", "en-GB"] {
+            assert!(on_stick.contains(want), "{want}");
+        }
         let swm = find("install.swm");
         let applied = d.join("applied");
         let st = Command::new("wimlib-imagex")
@@ -959,7 +1273,14 @@ mod tests {
         let opts = WindowsOptions {
             file_size: Some(200 << 20),
             part_bytes: 2_400_000, // force splitting
-            unattend: Unattend { bypass_hardware_checks: true },
+            unattend: Unattend {
+                bypass_hardware_checks: true,
+                skip_online_account: true,
+                local_account: Some("nyan".into()),
+                skip_privacy_questions: true,
+                disable_bitlocker: true,
+                locale: Some("en-GB".into()),
+            },
             ..Default::default()
         };
         let no = || Arc::new(AtomicBool::new(false));

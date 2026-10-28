@@ -2,6 +2,8 @@ pub mod boot;
 pub mod flash;
 pub mod format;
 pub mod home;
+pub mod nytest;
+pub mod settings;
 
 use crate::elevation::{self, Privilege};
 use crate::icons::Icon;
@@ -19,6 +21,8 @@ pub enum Screen {
     Flash,
     Boot,
     Format,
+    Test,
+    Settings,
 }
 
 /// What every screen can see about the app.
@@ -29,6 +33,11 @@ pub struct Shell {
     pub go: Option<Screen>,
     pub restart_error: Option<String>,
     pub wants_restart: bool,
+    /// A setup page whose height changes with its mode (NyTest) sets this each frame, so the page sits at a fixed
+    /// distance from the top instead of being centred: the row of modes then stays where the pointer found it.
+    pub anchor_top: bool,
+    /// The person's choices (tool order, NyTest on or off); written to disk whenever they change.
+    pub settings: crate::settings::Settings,
 }
 
 impl Shell {
@@ -112,7 +121,7 @@ pub fn phase_text(run: &Run) -> String {
     }
 }
 
-/// The running-operation panel shared by all three tools: real percentage and bytes when the engine reports them,
+/// The running-operation panel shared by all the tools: real percentage and bytes when the engine reports them,
 /// an indeterminate bar when it does not. Speed and time left only appear once they can be measured.
 pub fn run_panel(ui: &mut Ui, id: Id, run: &Run, stopping: bool, rows: &[(&str, String)]) {
     let w = ui.available_width().min(600.0);
@@ -181,3 +190,12 @@ pub fn pick_files(title: &str, filters: &[(&str, &[&str])], multiple: bool) -> V
         d.pick_file().into_iter().collect()
     }
 }
+
+/// The native "save as" dialog. For automated testing, NYFORGE_GUI_TEST_SAVE="/a.img" answers it instead.
+pub fn pick_save(title: &str, file_name: &str) -> Option<PathBuf> {
+    if let Some(v) = std::env::var_os("NYFORGE_GUI_TEST_SAVE") {
+        return Some(PathBuf::from(v));
+    }
+    rfd::FileDialog::new().set_title(title).set_file_name(file_name).save_file()
+}
+

@@ -68,7 +68,7 @@ impl<'a> Btn<'a> {
         if self.big { 16.0 } else if self.small { 13.5 } else { 14.5 }
     }
     fn height(&self) -> f32 {
-        if self.big { 46.0 } else if self.small { 28.0 } else { 34.0 }
+        if self.big { 46.0 } else if self.small { 26.0 } else { 34.0 }
     }
     /// Shown on hover; for a disabled button it says why it is disabled.
     pub fn tip(mut self, t: &'a str) -> Self {
@@ -101,13 +101,13 @@ impl<'a> Btn<'a> {
         } else {
             match self.kind {
                 Kind::Primary => {
-                    let base = mix(ACCENT, ACCENT_HI, hover);
+                    let base = mix(ACCENT, ACCENT_HI, hover * 0.65);
                     (if down { ACCENT_DEEP } else { base }, if down { ACCENT_DEEP } else { base }, ON_ACCENT)
                 }
                 Kind::Secondary => {
                     // An outlined pill that fills softly on hover.
                     let base = with_alpha(PANEL_HI, (hover * 255.0) as u8);
-                    (if down { FIELD } else { base }, mix(BORDER_HI, TEXT, hover * 0.6), TEXT)
+                    (if down { FIELD } else { base }, mix(BORDER_HI, mix(TEXT, ACCENT_HI, 0.35), hover * 0.75), TEXT)
                 }
                 Kind::Destructive => {
                     let base = mix(DANGER_DEEP, DANGER, hover);
@@ -115,21 +115,26 @@ impl<'a> Btn<'a> {
                 }
             }
         };
-        let grow = if self.enabled { hover * if self.big { 2.0 } else { 1.0 } } else { 0.0 };
-        let r = rect.translate(vec2(0.0, if down { 1.0 } else { 0.0 })).expand(if down { -0.5 } else { grow });
+        // hover: the pill rises a little and grows; pressing sinks it back
+        let lift = if self.enabled { -hover * if self.big { 2.0 } else { 1.2 } } else { 0.0 };
+        let grow = if self.enabled { hover * if self.big { 2.5 } else { 1.2 } } else { 0.0 };
+        let r = if down { rect.translate(vec2(0.0, 1.0)).shrink(0.8) } else { rect.translate(vec2(0.0, lift)).expand(grow) };
         let p = ui.painter();
         let pill = CornerRadius::same((self.height() / 2.0) as u8);
-        if self.enabled && matches!(self.kind, Kind::Primary | Kind::Destructive) {
-            // a soft glow in the button's own colour, a little stronger under the pointer
-            let glow = with_alpha(fill, (50.0 + 40.0 * hover) as u8);
-            p.add(egui::Shadow { offset: [0, 3], blur: 12, spread: 0, color: glow }.as_shape(r, pill));
+        let filled = self.enabled && matches!(self.kind, Kind::Primary | Kind::Destructive);
+        if filled {
+            // a plain, soft drop shadow that deepens a little as the button rises
+            let a = if down { 25.0 } else { 40.0 + 25.0 * hover };
+            p.add(egui::Shadow { offset: [0, (2.0 + 2.0 * hover) as i8], blur: (6.0 + 4.0 * hover) as u8, spread: 0, color: Color32::from_black_alpha(a as u8) }.as_shape(r, pill));
         }
         p.rect(r, pill, fill, Stroke::new(1.5_f32, border), StrokeKind::Inside);
         let total = galley.size().x + icon_w;
         let mut x = r.center().x - total / 2.0;
         if let Some(ic) = self.icon {
-            let isz = if self.big { 20.0 } else { 16.0 };
-            icons::paint(p, ic, Rect::from_center_size(pos2(x + isz / 2.0, r.center().y), vec2(isz, isz)), fg);
+            let isz = (if self.big { 20.0 } else { 16.0 }) * (1.0 + 0.08 * hover);
+            // the "back" arrow leans left, the others swell slightly
+            let nudge = if ic == Icon::Back { -2.5 * hover } else { 0.0 };
+            icons::paint(p, ic, Rect::from_center_size(pos2(x + 8.0 + nudge + if self.big { 2.0 } else { 0.0 }, r.center().y), vec2(isz, isz)), fg);
             x += icon_w;
         }
         let galley = p.layout_no_wrap(self.text.to_string(), FontId::new(fs, semibold()), fg);
@@ -167,8 +172,11 @@ pub fn link_button(ui: &mut Ui, text: &str, enabled: bool) -> Response {
     let pos = pos2(rect.center().x - g.size().x / 2.0, rect.center().y - g.size().y / 2.0);
     p.galley(pos, g.clone(), col);
     if hover > 0.01 {
+        // the underline draws itself out from the middle
         let y = pos.y + g.size().y + 0.5;
-        p.line_segment([pos2(pos.x, y), pos2(pos.x + g.size().x, y)], Stroke::new(1.2_f32, with_alpha(col, (hover * 255.0) as u8)));
+        let half = g.size().x / 2.0 * hover;
+        let mx = pos.x + g.size().x / 2.0;
+        p.line_segment([pos2(mx - half, y), pos2(mx + half, y)], Stroke::new(1.4_f32, with_alpha(ACCENT_HI, (180.0 + 75.0 * hover) as u8)));
     }
     if resp.has_focus() {
         focus_ring(p, rect);
@@ -184,7 +192,7 @@ pub fn info_button(ui: &mut Ui, label: &str) -> Response {
     let hover = hover_t(ui.ctx(), resp.id.with("h"), resp.hovered() || resp.has_focus());
     let p = ui.painter();
     p.rect(rect, CornerRadius::same(12), with_alpha(PANEL_HI, (hover * 255.0) as u8), Stroke::new(1.5_f32, mix(BORDER_HI, ACCENT_HI, hover)), StrokeKind::Inside);
-    icons::paint(p, Icon::Info, Rect::from_center_size(rect.center(), vec2(14.0, 14.0)), mix(MUTED, ACCENT_HI, hover));
+    icons::paint(p, Icon::Info, Rect::from_center_size(rect.center(), vec2(14.0 + 1.5 * hover, 14.0 + 1.5 * hover)), mix(MUTED, ACCENT_HI, hover));
     if resp.has_focus() {
         focus_ring_r(p, rect, 12.0);
     }
@@ -199,9 +207,9 @@ pub fn icon_button(ui: &mut Ui, icon: Icon, label: &str, enabled: bool) -> Respo
     let down = enabled && resp.is_pointer_button_down_on();
     let p = ui.painter();
     let fill = if down { FIELD } else { with_alpha(PANEL_HI, (hover * 255.0) as u8) };
-    p.rect(rect, CornerRadius::same(16), fill, Stroke::new(1.5_f32, mix(BORDER_HI, TEXT, hover * 0.5)), StrokeKind::Inside);
+    p.rect(rect, CornerRadius::same(16), fill, Stroke::new(1.5_f32, mix(BORDER_HI, mix(TEXT, ACCENT_HI, 0.3), hover * 0.6)), StrokeKind::Inside);
     let fg = if !enabled { DIM } else { mix(MUTED, TEXT, hover) };
-    icons::paint(p, icon, Rect::from_center_size(rect.center(), vec2(16.0, 16.0)), fg);
+    icons::paint(p, icon, Rect::from_center_size(rect.center(), vec2(16.0 + 1.5 * hover, 16.0 + 1.5 * hover)), fg);
     if resp.has_focus() {
         focus_ring_r(p, rect, 16.0);
     }
@@ -217,16 +225,20 @@ pub fn panel_frame() -> egui::Frame {
         .stroke(Stroke::new(1.0_f32, with_alpha(BORDER, 150)))
         .corner_radius(CornerRadius::same(14))
         .inner_margin(egui::Margin::same(18))
-        .shadow(egui::Shadow { offset: [0, 3], blur: 10, spread: 0, color: Color32::from_black_alpha(45) })
+        .shadow(egui::Shadow { offset: [0, 4], blur: 14, spread: 0, color: Color32::from_black_alpha(50) })
 }
 
 pub fn panel<R>(ui: &mut Ui, add: impl FnOnce(&mut Ui) -> R) -> R {
     let idx = next_panel_index();
-    staged_by(ui, &format!("panel{idx}"), 0.06 * idx as f32, 4.0, |ui| {
-        panel_frame().show(ui, |ui| {
+    staged_by(ui, &format!("panel{idx}"), 0.07 * idx as f32, 6.0, |ui| {
+        let out = panel_frame().show(ui, |ui| {
             ui.set_width(ui.available_width());
             add(ui)
-        }).inner
+        });
+        // a hairline of light along the top edge
+        let r = out.response.rect;
+        ui.painter().line_segment([pos2(r.left() + 16.0, r.top() + 0.8), pos2(r.right() - 16.0, r.top() + 0.8)], Stroke::new(1.0_f32, with_alpha(Color32::WHITE, 16)));
+        out.inner
     })
 }
 
@@ -292,13 +304,17 @@ pub fn pop_t(ctx: &egui::Context, id: Id, on: bool, secs: f32) -> f32 {
 
 /// 0 → 1 once after `on` turns true (a one-shot ripple); 1 while off, when finished, and with reduced motion.
 pub fn ripple_t(ctx: &egui::Context, id: Id, on: bool) -> f32 {
+    ripple_t_secs(ctx, id, on, 0.6)
+}
+
+pub fn ripple_t_secs(ctx: &egui::Context, id: Id, on: bool, secs: f32) -> f32 {
     if reduce_motion() {
         return 1.0;
     }
     match since_on(ctx, id, on) {
         None => 1.0,
         Some(s) => {
-            let t = (s / 0.5).clamp(0.0, 1.0);
+            let t = (s / secs).clamp(0.0, 1.0);
             if t < 1.0 {
                 ctx.request_repaint();
             }
@@ -308,19 +324,40 @@ pub fn ripple_t(ctx: &egui::Context, id: Id, on: bool) -> f32 {
 }
 
 pub fn paint_step_icon(p: &egui::Painter, rect: Rect, icon: Icon, done: f32, active: f32, enabled: bool, ripple: f32) {
+    paint_step_icon_tinted(p, rect, icon, done, active, enabled, ripple, ACCENT_HI, ACCENT_HI);
+}
+
+/// Same, with the colours the ring and the glyph take when `active` is 1 (the home screen uses light grey for hover).
+#[allow(clippy::too_many_arguments)]
+pub fn paint_step_icon_tinted(p: &egui::Painter, rect: Rect, icon: Icon, done: f32, active: f32, enabled: bool, ripple: f32, ring: Color32, glyph: Color32) {
     let k = rect.width() / 96.0; // everything is designed at 96 px and scales from there
     let c = rect.center();
     let fade = if enabled { 1.0 } else { 0.45 };
     if ripple < 0.999 {
         let e = ease_out(ripple);
-        p.circle_stroke(c, (44.0 + 20.0 * e) * k, Stroke::new((2.0 * k).max(1.0), with_alpha(ACCENT_HI, ((1.0 - e) * 150.0) as u8)));
+        p.circle_stroke(c, (44.0 + 20.0 * e) * k, Stroke::new((2.0 * k).max(1.0), with_alpha(ACCENT_HI, ((1.0 - e) * 55.0) as u8)));
     }
     for (grow, alpha) in [(5.0_f32, 10u8), (3.0, 14), (1.5, 18)] {
         p.circle_filled(c + vec2(0.0, 4.0 * k), (44.0 + grow) * k, Color32::from_black_alpha((alpha as f32 * fade) as u8));
     }
     p.circle_filled(c, 44.0 * k, with_alpha(FIELD, (255.0 * fade) as u8));
-    p.circle_stroke(c, 44.0 * k, Stroke::new((2.0 * k).max(1.5), mix(with_alpha(BORDER_HI, (255.0 * fade) as u8), ACCENT_HI, active)));
-    let ic = mix(mix(MUTED, TEXT, 0.5), ACCENT_HI, active);
+    // soft light inside the disc, strongest near the top
+    {
+        let mut m = egui::epaint::Mesh::default();
+        let centre = c + vec2(0.0, -16.0 * k);
+        m.colored_vertex(centre, with_alpha(Color32::WHITE, (8.0 * fade) as u8));
+        let n = 40;
+        for i in 0..n {
+            let a = std::f32::consts::TAU * i as f32 / n as f32;
+            m.colored_vertex(c + vec2(a.cos(), a.sin()) * 43.0 * k, with_alpha(Color32::WHITE, 0));
+        }
+        for i in 0..n as u32 {
+            m.add_triangle(0, 1 + i, 1 + (i + 1) % n as u32);
+        }
+        p.add(egui::Shape::mesh(m));
+    }
+    p.circle_stroke(c, 44.0 * k, Stroke::new((2.0 * k).max(1.5), mix(with_alpha(BORDER_HI, (255.0 * fade) as u8), ring, active)));
+    let ic = mix(mix(MUTED, TEXT, 0.5), glyph, active);
     icons::paint(p, icon, Rect::from_center_size(c, vec2(44.0 * k, 44.0 * k)), with_alpha(ic, (255.0 * fade) as u8));
     if done > 0.01 {
         let b = pos2(rect.right() - 10.0 * k, rect.bottom() - 10.0 * k);
@@ -553,6 +590,10 @@ impl Tone {
 /// A status message: icon, bold title, plain explanation, optional hint. Used for every warning and error.
 pub fn banner(ui: &mut Ui, tone: Tone, title: &str, body: &str, hint: Option<&str>) {
     let c = tone.color();
+    // a message fades in (and out is instant, since it simply stops being drawn)
+    let fade = reveal(ui.ctx(), &format!("banner-{title}-{body}"), 0.0);
+    ui.scope(|ui| {
+    ui.set_opacity(fade);
     egui::Frame::new()
         .fill(with_alpha(c, 30))
         .stroke(Stroke::new(1.0_f32, with_alpha(c, 110)))
@@ -577,6 +618,7 @@ pub fn banner(ui: &mut Ui, tone: Tone, title: &str, body: &str, hint: Option<&st
                 });
             });
         });
+    });
 }
 
 pub fn empty_state(ui: &mut Ui, icon: Icon, title: &str, body: &str) {
@@ -596,17 +638,17 @@ pub fn status_mark(ui: &mut Ui, id: Id, tone: Tone, show: bool) {
     let t = anim(ui.ctx(), id, show, 0.25);
     let pop = pop_t(ui.ctx(), id.with("pop"), show, 0.45);
     let ripple = ripple_t(ui.ctx(), id.with("ripple"), show);
-    let (rect, _) = ui.allocate_exact_size(vec2(84.0, 84.0), Sense::hover());
+    let (rect, _) = ui.allocate_exact_size(vec2(90.0, 90.0), Sense::hover());
     let c = tone.color();
     let p = ui.painter();
     let scale = 0.55 + 0.45 * pop;
-    let r = 38.0 * scale;
+    let r = 40.7 * scale;
     if ripple < 0.999 {
         let e = ease_out(ripple);
-        p.circle_stroke(rect.center(), 38.0 + 22.0 * e, Stroke::new(3.0_f32, with_alpha(c, ((1.0 - e) * 170.0) as u8)));
+        p.circle_stroke(rect.center(), 40.7 + 23.5 * e, Stroke::new(3.0_f32, with_alpha(c, ((1.0 - e) * 70.0) as u8)));
     }
     p.circle_filled(rect.center(), r, with_alpha(c, (255.0 * t) as u8));
-    icons::paint(p, tone.icon(), Rect::from_center_size(rect.center(), vec2(40.0 * scale, 40.0 * scale)), with_alpha(Color32::WHITE, (255.0 * t) as u8));
+    icons::paint(p, tone.icon(), Rect::from_center_size(rect.center(), vec2(42.9 * scale, 42.9 * scale)), with_alpha(Color32::WHITE, (255.0 * t) as u8));
 }
 
 /// The summary under a success title: a narrow card of label / value rows, centred.
@@ -717,13 +759,18 @@ pub fn page_title(ui: &mut Ui, name: &str, line: &str) {
 
 /// The same header for every running operation: round icon, what is happening, and a reminder not to unplug.
 pub fn run_header(ui: &mut Ui, icon: Icon, title: &str) {
+    run_header_ex(ui, icon, title, "Do not unplug the drive until this finishes.");
+}
+
+/// `run_header` with its own second line (a check of an image file has no drive to unplug).
+pub fn run_header_ex(ui: &mut Ui, icon: Icon, title: &str, line: &str) {
     ui.add_space(6.0);
     ui.vertical_centered(|ui| {
         step_icon(ui, icon, false, 1.0, true);
         ui.add_space(4.0);
         staged(ui, "run-title", 0.08, |ui| {
             ui.label(semibold_text(title, 22.0));
-            ui.label(small_muted("Do not unplug the drive until this finishes."));
+            ui.label(small_muted(line));
         });
     });
     ui.add_space(4.0);
@@ -732,6 +779,11 @@ pub fn run_header(ui: &mut Ui, icon: Icon, title: &str) {
 /// The drive choice for NyBoot and NyFormat: a round icon, the drive (or an invitation to pick one) and a pill that opens
 /// the "Select drive" window. Returns true when that pill was clicked.
 pub fn drive_slot(ui: &mut Ui, sel: Option<&crate::drives::Candidate>, enabled: bool) -> bool {
+    drive_slot_ex(ui, sel, enabled, "No drive selected", "Only removable drives are shown. Nothing is chosen for you.")
+}
+
+/// `drive_slot` with its own wording for the empty state (NyTest says which drives it takes).
+pub fn drive_slot_ex(ui: &mut Ui, sel: Option<&crate::drives::Candidate>, enabled: bool, empty_title: &str, empty_line: &str) -> bool {
     let mut clicked = false;
     panel(ui, |ui| {
         // in a narrow window the button moves under the text instead of squeezing it
@@ -764,8 +816,8 @@ pub fn drive_slot(ui: &mut Ui, sel: Option<&crate::drives::Candidate>, enabled: 
                         fit_label(ui, &format!("{} · {} · {}", c.size_text(), c.drive.path, c.kind_text()), |s| small_muted(s), FontId::new(12.0, egui::FontFamily::Proportional), text_w);
                     }
                     None => {
-                        ui.label(semibold_text("No drive selected", 17.0));
-                        ui.label(small_muted("Only removable drives are shown. Nothing is chosen for you."));
+                        ui.label(semibold_text(empty_title, 17.0));
+                        ui.label(small_muted(empty_line));
                     }
                 }
             });
@@ -787,4 +839,92 @@ pub fn drive_slot(ui: &mut Ui, sel: Option<&crate::drives::Candidate>, enabled: 
         }
     });
     clicked
+}
+
+
+/// A row of big choice cards: the chosen one is outlined in blue, the others light up grey under the pointer.
+/// `items` are (icon, title, one line). Returns true when the choice changed.
+pub fn choice_cards(ui: &mut Ui, id: Id, current: &mut usize, items: &[(Icon, &str, &str)], enabled: bool) -> bool {
+    let n = items.len().max(1);
+    let gap = 10.0;
+    let w = ui.available_width();
+    let stacked = w < 150.0 * n as f32 + gap * (n as f32 - 1.0) + 120.0;
+    let card_w = if stacked { w } else { (w - gap * (n as f32 - 1.0)) / n as f32 };
+    // tall enough for the longest description (three lines in a narrow card), never shorter than the usual card
+    let card_h = if stacked {
+        66.0
+    } else {
+        let text_h = items
+            .iter()
+            .map(|(_, _, l)| ui.painter().layout(l.to_string(), FontId::new(12.5, egui::FontFamily::Proportional), MUTED, card_w - 36.0).size().y)
+            .fold(0.0_f32, f32::max);
+        (54.0 + text_h + 16.0).max(104.0)
+    };
+    let mut changed = false;
+    let mut cur = *current;
+    let origin = ui.cursor().min;
+    let total_h = if stacked { card_h * n as f32 + gap * (n as f32 - 1.0) } else { card_h };
+    let (area, _) = ui.allocate_exact_size(vec2(w, total_h), Sense::hover());
+    let _ = origin;
+    // One title size for the whole row: the longest title decides, so the cards stay even.
+    let title_size = if stacked {
+        15.0
+    } else {
+        let room = card_w - 56.0 - 28.0;
+        let widest = items
+            .iter()
+            .map(|(_, t, _)| ui.painter().layout_no_wrap(t.to_string(), FontId::new(15.5, semibold()), TEXT).size().x)
+            .fold(0.0_f32, f32::max);
+        if widest > room { (15.5 * room / widest).max(12.0) } else { 15.5 }
+    };
+    for (i, (icon, title, line)) in items.iter().enumerate() {
+        let rect = if stacked {
+            Rect::from_min_size(pos2(area.left(), area.top() + (card_h + gap) * i as f32), vec2(card_w, card_h))
+        } else {
+            Rect::from_min_size(pos2(area.left() + (card_w + gap) * i as f32, area.top()), vec2(card_w, card_h))
+        };
+        let resp = ui.interact(rect, id.with(("card", i)), if enabled { Sense::click() } else { Sense::hover() });
+        let chosen = cur == i;
+        resp.widget_info(|| WidgetInfo::selected(WidgetType::RadioButton, enabled, chosen, format!("{title}: {line}")));
+        let sel_t = anim(ui.ctx(), resp.id.with("s"), chosen, 0.18);
+        let hov_t = hover_t(ui.ctx(), resp.id.with("h"), enabled && resp.hovered());
+        let down = enabled && resp.is_pointer_button_down_on();
+        let r = if down { rect.shrink(0.8) } else { rect.translate(vec2(0.0, -1.5 * hov_t * (1.0 - sel_t))) };
+        let p = ui.painter();
+        let fill = mix(mix(PANEL, PANEL_HI, hov_t * 0.8), mix(FIELD, ACCENT, 0.16), sel_t);
+        let border = mix(mix(with_alpha(BORDER, 150), HOVER_LINE, hov_t), ACCENT_HI, sel_t);
+        p.rect(r, CornerRadius::same(14), fill, Stroke::new(1.5_f32, border), StrokeKind::Inside);
+        let fg = if enabled { TEXT } else { DIM };
+        let glyph = mix(mix(MUTED, HOVER_GLYPH, hov_t), ACCENT_HI, sel_t);
+        if stacked {
+            let ic = Rect::from_center_size(pos2(r.left() + 34.0, r.center().y), vec2(26.0, 26.0));
+            icons::paint(p, *icon, ic, glyph);
+            p.text(pos2(r.left() + 64.0, r.top() + 12.0), Align2::LEFT_TOP, *title, FontId::new(15.0, semibold()), fg);
+            let g = p.layout(line.to_string(), FontId::new(12.5, egui::FontFamily::Proportional), if enabled { MUTED } else { DIM }, r.width() - 80.0);
+            p.galley(pos2(r.left() + 64.0, r.top() + 33.0), g, MUTED);
+        } else {
+            let ic = Rect::from_center_size(pos2(r.left() + 30.0, r.top() + 30.0), vec2(28.0, 28.0));
+            icons::paint(p, *icon, ic, glyph);
+            p.text(pos2(r.left() + 56.0, r.top() + 20.0 + (15.5 - title_size) * 0.5), Align2::LEFT_TOP, *title, FontId::new(title_size, semibold()), fg);
+            let g = p.layout(line.to_string(), FontId::new(12.5, egui::FontFamily::Proportional), if enabled { MUTED } else { DIM }, r.width() - 36.0);
+            p.galley(pos2(r.left() + 18.0, r.top() + 54.0), g, MUTED);
+        }
+        if sel_t > 0.02 {
+            let b = pos2(r.right() - 16.0, r.top() + 16.0);
+            p.circle_filled(b, 8.5 * sel_t, ACCENT);
+            icons::paint(p, Icon::Check, Rect::from_center_size(b, vec2(10.0 * sel_t, 10.0 * sel_t)), Color32::WHITE);
+        }
+        if resp.has_focus() {
+            focus_ring_r(p, rect, 14.0);
+        }
+        if enabled && resp.hovered() {
+            ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+        }
+        if resp.clicked() && !chosen {
+            cur = i;
+            changed = true;
+        }
+    }
+    *current = cur;
+    changed
 }

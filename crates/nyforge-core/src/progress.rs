@@ -77,6 +77,9 @@ pub enum Event {
         bytes: u64,
         elapsed_secs: f64,
         avg_speed_bps: f64,
+        /// Set when the drive matched except for a few bytes in a part of the image that other systems rewrite.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        note: Option<String>,
     },
     Error {
         error: NyError,

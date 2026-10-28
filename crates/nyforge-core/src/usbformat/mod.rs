@@ -13,6 +13,7 @@
 pub mod capacity;
 pub mod fsmake;
 pub mod prng;
+pub mod repair;
 pub mod tables;
 
 #[cfg(test)]
@@ -186,6 +187,10 @@ pub enum Wipe {
     Zero,
     /// Overwrite every byte with random data.
     Random,
+    /// Tell the drive that everything on it is unused (TRIM / discard), where it supports that: instant, and it restores
+    /// the speed of a drive whose flash has been filled and rewritten for years. Falls back to `Quick` when the drive
+    /// or the system cannot do it. It does not promise that old data cannot be recovered.
+    Discard,
 }
 
 impl FromStr for Wipe {
@@ -195,7 +200,8 @@ impl FromStr for Wipe {
             "quick" => Ok(Wipe::Quick),
             "zero" | "zeros" => Ok(Wipe::Zero),
             "random" => Ok(Wipe::Random),
-            other => Err(format!("\"{other}\" is not a wipe mode (quick, zero, random).")),
+            "discard" | "trim" => Ok(Wipe::Discard),
+            other => Err(format!("\"{other}\" is not a wipe mode (quick, zero, random, discard).")),
         }
     }
 }
@@ -268,6 +274,11 @@ pub struct FormatOptions {
     pub fit_real_capacity: bool,
     /// How many times the full test writes and reads the drive (1 to 4). Each pass uses new data, like a bad-blocks check.
     pub passes: u8,
+    /// How many times a zero or random wipe goes over the drive (1 to 7). Every pass but the last writes random data;
+    /// the last writes what the mode says (zeros or random).
+    pub wipe_passes: u8,
+    /// After a zero or random wipe, read the whole drive back and check it holds what the last pass wrote.
+    pub verify_wipe: bool,
     /// Leave this much unpartitioned at the end.
     pub reserve_bytes: u64,
     /// Required when the target is an image file.
@@ -277,6 +288,16 @@ pub struct FormatOptions {
     pub owner: Option<(u32, u32)>,
     /// Windows only: who does the formatting (see [`Engine`]).
     pub engine: Engine,
+    /// Repair a drive that will not format or shows the wrong size: look at the old layout first, clear the write-protect
+    /// flag, and zero the ends of the drive and of every old partition before formatting (see [`repair`]).
+    pub repair: bool,
+    /// Partitions start and end on multiples of this many bytes: 1 MiB (default), 4 MiB (what the SD Association's own
+    /// formatter uses, matching the erase blocks of SD cards) or 8 MiB.
+    pub align_bytes: u64,
+    /// MBR only: mark the first partition active (bootable), for old BIOS computers that boot a drive's boot code.
+    pub bootable: bool,
+    /// Read the result back from the drive when done: the partition table and every filesystem's signature.
+    pub verify_result: bool,
 }
 
 impl Default for FormatOptions {
@@ -288,11 +309,17 @@ impl Default for FormatOptions {
             capacity_test: CapacityTest::Off,
             fit_real_capacity: false,
             passes: 1,
+            wipe_passes: 1,
+            verify_wipe: false,
             reserve_bytes: 0,
             file_size: None,
             unmount: true,
             owner: None,
             engine: Engine::Auto,
+            repair: false,
+            align_bytes: MIB,
+            bootable: false,
+            verify_result: true,
         }
     }
 }
@@ -338,6 +365,15 @@ impl PartPlan {
 
 /// Work out where every partition goes. Pure arithmetic: nothing is touched, so bad requests fail before anything is erased.
 pub fn plan_layout(disk_bytes: u64, scheme: Scheme, specs: &[PartSpec], reserve_bytes: u64) -> Result<Vec<PartPlan>> {
+    plan_layout_aligned(disk_bytes, scheme, specs, reserve_bytes, MIB)
+}
+
+/// [`plan_layout`] with partitions starting and ending on multiples of `align_bytes` (1, 2, 4, 8 or 16 MiB).
+pub fn plan_layout_aligned(disk_bytes: u64, scheme: Scheme, specs: &[PartSpec], reserve_bytes: u64, align_bytes: u64) -> Result<Vec<PartPlan>> {
+    if !(MIB..=16 * MIB).contains(&align_bytes) || !align_bytes.is_power_of_two() {
+        return Err(NyError::invalid("The alignment must be 1, 2, 4, 8 or 16 MiB."));
+    }
+    let align = align_bytes / SECTOR;
     if specs.is_empty() {
         return Err(NyError::invalid("Nothing to create: no partition was requested."));
     }
@@ -353,19 +389,19 @@ pub fn plan_layout(disk_bytes: u64, scheme: Scheme, specs: &[PartSpec], reserve_
             return Err(NyError::invalid("Only the last partition can take \"the rest\" of the drive: give the others a size."));
         }
     }
-    let reserve = round_up(reserve_bytes, MIB) / SECTOR;
-    let first = if scheme == Scheme::None { 0 } else { MIB_SECTORS };
+    let reserve = round_up(reserve_bytes, align_bytes) / SECTOR;
+    let first = if scheme == Scheme::None { 0 } else { align.max(MIB_SECTORS) };
     let end = match scheme {
         Scheme::None => disk_sectors,
-        Scheme::Mbr => disk_sectors.min(1 << 32) & !(MIB_SECTORS - 1),
-        Scheme::Gpt => disk_sectors.saturating_sub(tables::GPT_TAIL_SECTORS + 1) & !(MIB_SECTORS - 1),
+        Scheme::Mbr => disk_sectors.min(1 << 32) & !(align - 1),
+        Scheme::Gpt => disk_sectors.saturating_sub(tables::GPT_TAIL_SECTORS + 1) & !(align - 1),
     };
     let end = end.saturating_sub(reserve);
     let mut cursor = first;
     let mut out = vec![];
     for (i, s) in specs.iter().enumerate() {
         let sectors = match s.size {
-            Some(b) => round_up(b.max(1), MIB) / SECTOR,
+            Some(b) => round_up(b.max(1), align_bytes) / SECTOR,
             None => end.saturating_sub(cursor),
         };
         if cursor + sectors > end {
@@ -611,7 +647,7 @@ fn format_impl(target: &Target, opts: &FormatOptions, cancel: Arc<AtomicBool>, e
             }
         }
     }
-    let mut plan = plan_layout(claimed, opts.scheme, &opts.parts, opts.reserve_bytes)?;
+    let mut plan = plan_layout_aligned(claimed, opts.scheme, &opts.parts, opts.reserve_bytes, opts.align_bytes)?;
     for p in &plan {
         if let Some(c) = p.spec.cluster {
             fsmake::check_cluster_fits(p.spec.fs, p.bytes(), c)?;
@@ -628,9 +664,44 @@ fn format_impl(target: &Target, opts: &FormatOptions, cancel: Arc<AtomicBool>, e
         total_bytes: Some(claimed),
         targets: vec![target.display.clone()],
     });
+    let mut early_notes: Vec<String> = vec![];
+    if opts.repair && (target.kind != TargetKind::File || target.path.exists()) {
+        rep.phase(Phase::Preparing, "Looking at the drive");
+        let diag = match repair::diagnose(target, claimed) {
+            Ok(d) => {
+                for f in &d.findings {
+                    rep.log(f.clone());
+                    early_notes.push(format!("Found: {f}"));
+                }
+                Some(d)
+            }
+            Err(e) => {
+                rep.log(format!("Could not read the old layout ({}); cleaning anyway.", e.message));
+                None
+            }
+        };
+        check_cancel(&cancel)?;
+        if let Some(d) = &target.drive {
+            rep.phase(Phase::Preparing, "Releasing the drive and clearing old data");
+            let _prep = sys::prepare_device_for_erase(d, opts.unmount)?;
+            if d.read_only && repair::clear_read_only(&target.path) {
+                early_notes.push("The write-protect flag was cleared.".into());
+            }
+            match repair::deep_clean(target, claimed, diag.as_ref(), &cancel) {
+                Ok(()) => early_notes.push("Old partitions, labels and boot data were cleared from both ends of the drive and from every old partition.".into()),
+                Err(e) if e.kind == ErrorKind::Cancelled => return Err(e),
+                // Windows' own tools clean the disk again right after this, so a failure here is not the end.
+                Err(e) if cfg!(windows) && opts.engine != Engine::Own => rep.log(format!("The extra clean-up did not finish ({}); Windows' own tools carry on.", e.message)),
+                Err(e) => return Err(e),
+            }
+        } else if target.kind == TargetKind::File {
+            repair::deep_clean(target, claimed, diag.as_ref(), &cancel)?;
+            early_notes.push("Old partitions, labels and boot data were cleared from both ends of the drive and from every old partition.".into());
+        }
+    }
     // Windows: its own tools first for a plain quick format. They are what a "format" button there uses, and they
     // work on sticks that drop off the bus when a program writes to the raw disk.
-    let mut early_notes: Vec<String> = vec![];
+    let mut native_failure: Option<String> = None;
     if cfg!(windows) && target.kind == TargetKind::BlockDevice && opts.engine != Engine::Own {
         if let Some(d) = &target.drive {
             match winnative::eligible(opts, &plan) {
@@ -657,7 +728,11 @@ fn format_impl(target: &Target, opts: &FormatOptions, cancel: Arc<AtomicBool>, e
                                 wipe: opts.wipe,
                                 capacity: None,
                                 elapsed_secs: elapsed,
-                                notes: vec!["Formatted with Windows' own tools.".into()],
+                                notes: {
+                                    let mut n = std::mem::take(&mut early_notes);
+                                    n.push("Formatted with Windows' own tools.".into());
+                                    n
+                                },
                             });
                         }
                         Err(e) if e.kind == ErrorKind::Cancelled => return Err(e),
@@ -665,6 +740,7 @@ fn format_impl(target: &Target, opts: &FormatOptions, cancel: Arc<AtomicBool>, e
                         Err(e) => {
                             rep.log(format!("Windows' own tools did not manage ({}); trying NyForge's own writer.", e.message));
                             early_notes.push("Windows' own tools could not format this drive, so NyForge's own writer did.".into());
+                            native_failure = Some(e.message.clone());
                         }
                     }
                 }
@@ -737,7 +813,7 @@ fn format_impl(target: &Target, opts: &FormatOptions, cancel: Arc<AtomicBool>, e
                     }
                     notes.push(format!("The drive claims {} but only {} works: only that part was formatted.", human_size(r.claimed), human_size(real)));
                     usable_bytes = real;
-                    plan = plan_layout(real, opts.scheme, &opts.parts, opts.reserve_bytes)?;
+                    plan = plan_layout_aligned(real, opts.scheme, &opts.parts, opts.reserve_bytes, opts.align_bytes)?;
                     for p in &plan {
                         if let Some(c) = p.spec.cluster {
                             fsmake::check_cluster_fits(p.spec.fs, p.bytes(), c)?;
@@ -752,13 +828,28 @@ fn format_impl(target: &Target, opts: &FormatOptions, cancel: Arc<AtomicBool>, e
         let usable = whole.sub(0, usable_bytes).map_err(|e| io_err(e, "partitioning"))?;
 
         // 3b. Wipe.
-        let full_test_already_random = opts.capacity_test == CapacityTest::Full && opts.wipe == Wipe::Random;
-        if opts.wipe != Wipe::Quick && !full_test_already_random {
+        if opts.wipe == Wipe::Discard {
+            rep.phase(Phase::Writing, "Telling the drive its blocks are unused (TRIM)");
+            if sys::discard_all(&usable.file(), usable.len()) {
+                notes.push("The drive discarded all its blocks (TRIM).".into());
+            } else {
+                rep.log("This drive or system cannot discard blocks; the old partition tables were cleared instead.".to_string());
+                notes.push("Discard (TRIM) is not available for this drive here, so only the old partition tables were cleared.".into());
+            }
+        }
+        let full_test_already_random = opts.capacity_test == CapacityTest::Full && opts.wipe == Wipe::Random && opts.wipe_passes <= 1 && !opts.verify_wipe;
+        if !matches!(opts.wipe, Wipe::Quick | Wipe::Discard) && !full_test_already_random {
             let what = if opts.wipe == Wipe::Zero { "zeros" } else { "random data" };
             rep.phase(Phase::Writing, format!("Overwriting the whole drive with {what}"));
             rep.log(format!("Overwriting the whole drive with {what}…"));
             rep.restart();
-            wipe_all(&usable, opts.wipe, &cancel, &mut rep)?;
+            wipe_all(&usable, opts.wipe, opts.wipe_passes.clamp(1, MAX_WIPE_PASSES), opts.verify_wipe, &cancel, &mut rep)?;
+            if opts.verify_wipe {
+                notes.push("The wipe was read back and matches.".into());
+            }
+            if opts.wipe_passes > 1 {
+                notes.push(format!("The drive was overwritten {} times.", opts.wipe_passes));
+            }
         }
         // Whatever the mode: old tables and filesystem signatures go (a leftover ext4 superblock inside a new FAT32
         // partition makes `blkid` and file managers disagree about what the drive is).
@@ -794,7 +885,10 @@ fn format_impl(target: &Target, opts: &FormatOptions, cancel: Arc<AtomicBool>, e
             Scheme::None => {}
             Scheme::Mbr => {
                 rep.phase(Phase::Writing, "Writing the partition table (MBR)");
-                let mbr = tables::mbr_sector(u32::from_le_bytes(sig) | 0x0100_0000, &table)?;
+                let mut mbr = tables::mbr_sector(u32::from_le_bytes(sig) | 0x0100_0000, &table)?;
+                if opts.bootable {
+                    mbr[446] = 0x80; // the first partition is active
+                }
                 usable.write_at(&mbr, 0).map_err(|e| io_err(e, "writing the partition table"))?;
                 if claimed / SECTOR > (1 << 32) && usable_bytes == claimed {
                     notes.push(format!("MBR can only address 2 TiB: the other {} of the drive is unused. Use --scheme gpt to use all of it.", human_size(claimed - (1u64 << 32) * SECTOR)));
@@ -828,13 +922,20 @@ fn format_impl(target: &Target, opts: &FormatOptions, cancel: Arc<AtomicBool>, e
     })();
     drop(whole);
 
+    // When NyForge's own writer fails after Windows' tools did, both reasons belong in the message.
+    let with_native = |mut e: NyError| -> NyError {
+        if let Some(n) = &native_failure {
+            e.message = format!("{} (Windows' own tools had failed first: {n})", e.message);
+        }
+        e
+    };
     let (capacity_report, usable_bytes) = match result {
         Ok(v) => v,
         Err(mut e) => {
             if e.kind == ErrorKind::Cancelled {
                 e = e.with_hint("The drive may be partly erased. Run the format again to make it usable.");
             }
-            return Err(e);
+            return Err(with_native(e));
         }
     };
 
@@ -855,7 +956,7 @@ fn format_impl(target: &Target, opts: &FormatOptions, cancel: Arc<AtomicBool>, e
                 TargetKind::BlockDevice if cfg!(windows) => {
                     let path = target.path.to_string_lossy();
                     let disk = device::windows::disk_number(&path).ok_or_else(|| NyError::other(format!("{path} is not a Windows physical drive.")))?;
-                    fsmake::make_with_tool(&job, fsmake::ToolTarget::WindowsPartition { disk, number: p.number }, &scratch)?;
+                    fsmake::make_with_tool(&job, fsmake::ToolTarget::WindowsPartition { disk, number: p.number }, &scratch).map_err(&with_native)?;
                 }
                 TargetKind::BlockDevice => {
                     let disk = target.path.to_string_lossy().into_owned();
@@ -878,6 +979,14 @@ fn format_impl(target: &Target, opts: &FormatOptions, cancel: Arc<AtomicBool>, e
     }
     if target.kind == TargetKind::BlockDevice {
         sys::finish_device(&target.path);
+    }
+    if opts.verify_result {
+        rep.phase(Phase::Verifying, "Checking the result");
+        match check_result(target, usable_bytes, opts.scheme, &plan) {
+            Ok(true) => notes.push("Checked: the partition table and every filesystem signature were read back from the drive.".into()),
+            Ok(false) => notes.push("The result could not be read back for a check (the drive may still be settling).".into()),
+            Err(e) => return Err(e),
+        }
     }
     for p in &plan {
         if p.spec.fs == Fs::Fat32 && p.bytes() > 32 * GIB {
@@ -907,32 +1016,136 @@ fn format_impl(target: &Target, opts: &FormatOptions, cancel: Arc<AtomicBool>, e
     })
 }
 
-/// Overwrite all of `io` with zeros or random bytes.
-fn wipe_all(io: &FileIo, kind: Wipe, cancel: &AtomicBool, rep: &mut Reporter) -> Result<()> {
+/// Does the first block of a partition carry the signature of the filesystem it should hold?
+fn fs_signature_ok(fs: Fs, block: &[u8]) -> bool {
+    if block.len() < 2048 {
+        return false;
+    }
+    match fs {
+        Fs::Fat32 => &block[0x52..0x5A] == b"FAT32   " && block[510] == 0x55 && block[511] == 0xAA,
+        Fs::Fat16 => &block[0x36..0x3B] == b"FAT16" && block[510] == 0x55 && block[511] == 0xAA,
+        Fs::ExFat => &block[3..11] == b"EXFAT   ",
+        Fs::Ntfs => &block[3..11] == b"NTFS    ",
+        Fs::Ext2 | Fs::Ext3 | Fs::Ext4 => u16::from_le_bytes([block[1080], block[1081]]) == 0xEF53,
+    }
+}
+
+/// Read the drive back and compare it with what was planned: the partition table (every partition where it should be
+/// and as big as it should be) and the signature of every filesystem. `Ok(false)` when the drive could not be read at
+/// all just now; `Err` when it was read and is wrong.
+fn check_result(target: &Target, usable_bytes: u64, scheme: Scheme, plan: &[PartPlan]) -> Result<bool> {
+    let block = target.kind == TargetKind::BlockDevice;
+    let Ok(file) = sys::open_read(&target.path, target.kind, block) else { return Ok(false) };
+    let io = FileIo::new(file, 0, usable_bytes / SECTOR * SECTOR, if block { 4096 } else { 1 });
+    let wrong = |what: String| NyError::new(ErrorKind::VerifyFailed, format!("The drive does not hold what was just written: {what}.")).with_hint("Format it again. If this repeats the drive is probably failing, or smaller than it claims: tick the bad-block check.");
+    if scheme != Scheme::None {
+        let Ok(found) = crate::partition::read_table(&io) else { return Ok(false) };
+        if found.len() != plan.len() {
+            return Err(wrong(format!("{} partition(s) were written but {} read back", plan.len(), found.len())));
+        }
+        for (f, p) in found.iter().zip(plan) {
+            if f.start != p.start || f.sectors != p.sectors {
+                return Err(wrong(format!("partition {} reads back at a different place or size", p.number)));
+            }
+        }
+    }
+    for p in plan {
+        let mut b = vec![0u8; 4096];
+        if io.read_at(&mut b, p.start * SECTOR).is_err() {
+            return Ok(false);
+        }
+        // NTFS made by Windows' own tools and ext made by mkfs are checked by their signature too.
+        if !fs_signature_ok(p.spec.fs, &b) {
+            return Err(wrong(format!("partition {} has no {} signature", p.number, p.spec.fs.name())));
+        }
+    }
+    Ok(true)
+}
+
+pub const MAX_WIPE_PASSES: u8 = 7;
+
+/// Overwrite all of `io` `passes` times. Every pass but the last writes random data (so what was there first cannot be
+/// read from a half-finished wipe either); the last writes zeros for `Wipe::Zero` and random data for `Wipe::Random`.
+/// With `verify` the whole region is read back afterwards and compared with what the last pass wrote.
+fn wipe_all(io: &FileIo, kind: Wipe, passes: u8, verify: bool, cancel: &AtomicBool, rep: &mut Reporter) -> Result<u64> {
     let len = io.len();
     const CHUNK: u64 = 4 * MIB;
     let mut buf = vec![0u8; CHUNK as usize];
-    let mut rng = prng::Rng::new(prng::random_seed());
-    let mut zeroout_works = kind == Wipe::Zero && cfg!(target_os = "linux");
+    let mut last_seed = 0u64;
+    for pass in 0..passes {
+        let last = pass + 1 == passes;
+        let zeros = kind == Wipe::Zero && last;
+        if passes > 1 {
+            rep.log(format!("Pass {} of {}…", pass + 1, passes));
+            rep.phase(Phase::Writing, format!("Overwriting the drive, pass {} of {}", pass + 1, passes));
+            rep.restart();
+        }
+        let seed = prng::random_seed();
+        last_seed = seed;
+        let mut rng = prng::Rng::new(seed);
+        let mut zeroout_works = zeros && cfg!(target_os = "linux");
+        let mut off = 0u64;
+        while off < len {
+            check_cancel(cancel)?;
+            let n = (len - off).min(CHUNK);
+            let mut done = false;
+            if zeroout_works && n % 512 == 0 && off % 512 == 0 {
+                // The drive's own "write zeroes" command, when it has one: no data crosses the cable.
+                done = sys::zero_range(&io.file(), off, n);
+                zeroout_works = done;
+            }
+            if !done {
+                if zeros {
+                    buf[..n as usize].fill(0);
+                } else {
+                    rng.fill(&mut buf[..n as usize]);
+                }
+                io.write_at(&buf[..n as usize], off).map_err(|e| io_err(e, "overwriting the drive"))?;
+            }
+            off += n;
+            rep.progress(off, len);
+        }
+        io.sync().map_err(|e| io_err(e, "flushing the drive"))?;
+    }
+    if verify {
+        check_wipe(io, kind == Wipe::Zero, last_seed, cancel, rep)?;
+    }
+    Ok(last_seed)
+}
+
+/// Read all of `io` back and check it holds what the last wipe pass wrote: zeros, or the random data of `seed`.
+fn check_wipe(io: &FileIo, zeros: bool, seed: u64, cancel: &AtomicBool, rep: &mut Reporter) -> Result<()> {
+    let len = io.len();
+    const CHUNK: u64 = 4 * MIB;
+    rep.phase(Phase::Verifying, "Reading the wipe back");
+    rep.log("Reading the wipe back…");
+    rep.restart();
+    let mut rng = prng::Rng::new(seed);
+    let mut want = vec![0u8; CHUNK as usize];
+    let mut got = vec![0u8; CHUNK as usize];
     let mut off = 0u64;
     while off < len {
         check_cancel(cancel)?;
-        let n = (len - off).min(CHUNK);
-        let mut done = false;
-        if zeroout_works && n % 512 == 0 && off % 512 == 0 {
-            // The drive's own "write zeroes" command, when it has one: no data crosses the cable.
-            done = sys::zero_range(&io.file(), off, n);
-            zeroout_works = done;
+        let n = (len - off).min(CHUNK) as usize;
+        io.read_at(&mut got[..n], off).map_err(|e| io_err(e, "reading the drive back"))?;
+        if !zeros {
+            rng.fill(&mut want[..n]);
         }
-        if !done {
-            if kind == Wipe::Random {
-                rng.fill(&mut buf[..n as usize]);
-            }
-            io.write_at(&buf[..n as usize], off).map_err(|e| io_err(e, "overwriting the drive"))?;
+        let same = if zeros { got[..n].iter().all(|&b| b == 0) } else { got[..n] == want[..n] };
+        if !same {
+            let first = if zeros {
+                got[..n].iter().position(|&b| b != 0).unwrap_or(0)
+            } else {
+                got[..n].iter().zip(&want[..n]).position(|(a, b)| a != b).unwrap_or(0)
+            };
+            return Err(NyError::new(
+                ErrorKind::VerifyFailed,
+                format!("The wipe did not stick: the drive holds something else at {} from the start.", human_size(off + first as u64)),
+            )
+            .with_hint("The drive may be failing or counterfeit. Try a capacity test (--test-capacity full)."));
         }
-        off += n;
+        off += n as u64;
         rep.progress(off, len);
     }
-    io.sync().map_err(|e| io_err(e, "flushing the drive"))?;
     Ok(())
 }

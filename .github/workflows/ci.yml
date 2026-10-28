@@ -32,15 +32,16 @@ jobs:
           cargo test --locked -p nyforge-core usbformat -- --ignored --skip a_real_block_device
       - name: Installer works from a clone
         run: |
-          ./install.sh --user
-          ~/.local/bin/nyforge --version
-          test -x ~/.local/bin/nyforge-gui
-          test -x ~/.local/bin/nyforge-uninstall
-          test -f ~/.local/share/applications/nyforge.desktop
-          grep -q "Exec=$HOME/.local/bin/nyforge-gui" ~/.local/share/applications/nyforge.desktop
-          ~/.local/bin/nyforge-uninstall -y
-          test ! -e ~/.local/bin/nyforge && test ! -e ~/.local/bin/nyforge-uninstall
-          test ! -e ~/.local/share/applications/nyforge.desktop
+          if ./install.sh >/dev/null 2>&1; then echo "installer ran without sudo"; exit 1; fi
+          sudo ./install.sh
+          /usr/local/bin/nyforge --version
+          test -x /usr/local/bin/nyforge-gui
+          test -x /usr/local/bin/nyforge-uninstall
+          test -f /usr/local/share/applications/nyforge.desktop
+          grep -q "Exec=/usr/local/bin/nyforge-gui" /usr/local/share/applications/nyforge.desktop
+          sudo /usr/local/bin/nyforge-uninstall -y
+          test ! -e /usr/local/bin/nyforge && test ! -e /usr/local/bin/nyforge-uninstall
+          test ! -e /usr/local/share/applications/nyforge.desktop
 
   # Apple Silicon runner. This is the first place the macOS code is compiled and run for real,
   # and `list` / `doctor` exercise the real `diskutil` on a real Mac.

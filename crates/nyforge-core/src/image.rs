@@ -185,9 +185,90 @@ fn zstd_content_size<R: Read + Seek>(f: &mut R) -> Option<u64> {
 
 type BoxRead = Box<dyn Read + Send>;
 
+/// Runs a decoder on its own thread, a few blocks ahead of the consumer, so decompressing and everything the reader
+/// does with the data (filling chunks, the zero check, handing them to the writers) overlap on a multi-core machine.
+/// On one core it costs one extra thread switch per block. Dropping it stops the thread at its next block.
+struct PrefetchReader {
+    rx: crossbeam_channel::Receiver<std::io::Result<Vec<u8>>>,
+    cur: Vec<u8>,
+    pos: usize,
+    done: bool,
+    failed: Option<std::io::Error>,
+}
+
+const PREFETCH_BLOCK: usize = 1 << 20;
+const PREFETCH_DEPTH: usize = 4;
+
+impl PrefetchReader {
+    fn new(mut inner: BoxRead) -> Self {
+        let (tx, rx) = crossbeam_channel::bounded(PREFETCH_DEPTH);
+        let spawned = std::thread::Builder::new().name("nyforge-decode".into()).spawn(move || loop {
+            let mut buf = vec![0u8; PREFETCH_BLOCK];
+            let mut n = 0;
+            while n < buf.len() {
+                match inner.read(&mut buf[n..]) {
+                    Ok(0) => break,
+                    Ok(k) => n += k,
+                    Err(e) if e.kind() == std::io::ErrorKind::Interrupted => {}
+                    Err(e) => {
+                        let _ = tx.send(Err(e));
+                        return;
+                    }
+                }
+            }
+            buf.truncate(n);
+            let last = n < PREFETCH_BLOCK;
+            if n > 0 && tx.send(Ok(buf)).is_err() {
+                return;
+            }
+            if last {
+                return;
+            }
+        });
+        // A thread that cannot start is an error on the first read, never a silently short image.
+        PrefetchReader { rx, cur: Vec::new(), pos: 0, done: false, failed: spawned.err() }
+    }
+}
+
+impl Read for PrefetchReader {
+    fn read(&mut self, out: &mut [u8]) -> std::io::Result<usize> {
+        if out.is_empty() {
+            return Ok(0);
+        }
+        if let Some(e) = self.failed.take() {
+            self.done = true;
+            return Err(e);
+        }
+        while self.pos >= self.cur.len() {
+            if self.done {
+                return Ok(0);
+            }
+            match self.rx.recv() {
+                Ok(Ok(b)) => {
+                    self.cur = b;
+                    self.pos = 0;
+                }
+                Ok(Err(e)) => {
+                    self.done = true;
+                    return Err(e);
+                }
+                Err(_) => {
+                    self.done = true;
+                    return Ok(0);
+                }
+            }
+        }
+        let n = out.len().min(self.cur.len() - self.pos);
+        out[..n].copy_from_slice(&self.cur[self.pos..self.pos + n]);
+        self.pos += n;
+        Ok(n)
+    }
+}
+
 fn decoder(container: Container, raw: BoxRead) -> Result<BoxRead> {
-    Ok(match container {
-        Container::Raw => raw,
+    let cores = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(1);
+    let plain: BoxRead = match container {
+        Container::Raw => return Ok(raw),
         Container::Gzip => Box::new(flate2::read::MultiGzDecoder::new(BufReader::with_capacity(1 << 20, raw))),
         Container::Xz => Box::new(xz2::read::XzDecoder::new_multi_decoder(BufReader::with_capacity(1 << 20, raw))),
         Container::Bzip2 => Box::new(bzip2::read::MultiBzDecoder::new(BufReader::with_capacity(1 << 20, raw))),
@@ -196,7 +277,9 @@ fn decoder(container: Container, raw: BoxRead) -> Result<BoxRead> {
                 .map_err(|e| NyError::from_io(&e, "starting the zstd decoder"))?,
         ),
         Container::Zip => unreachable!("zip handled separately"),
-    })
+    };
+    // A second core is what makes decoding ahead pay off; on a single core it would only add copies.
+    Ok(if cores > 1 { Box::new(PrefetchReader::new(plain)) } else { plain })
 }
 
 fn is_image_name(name: &str) -> bool {
@@ -207,7 +290,7 @@ fn is_image_name(name: &str) -> bool {
 }
 
 fn open_zip(path: &Path, counter: Arc<AtomicU64>, label: String, clen: u64) -> Result<ImageSource> {
-    let f = File::open(path).ctx("opening the zip file")?;
+    let f = crate::sys::open_sequential(path).ctx("opening the zip file")?;
     let mut ar = zip::ZipArchive::new(BufReader::new(f)).map_err(|e| {
         NyError::new(ErrorKind::ImageCorrupt, format!("This zip file is damaged: {e}"))
             .with_hint("Download it again.")
@@ -236,7 +319,7 @@ fn open_zip(path: &Path, counter: Arc<AtomicU64>, label: String, clen: u64) -> R
         return Err(NyError::new(ErrorKind::ImageUnsupported, "This zip file is password protected.")
             .with_hint("Extract it first, then flash the extracted image."));
     }
-    let mut f = File::open(path).ctx("reopening the zip file")?;
+    let mut f = crate::sys::open_sequential(path).ctx("reopening the zip file")?;
     f.seek(SeekFrom::Start(start)).ctx("seeking inside the zip file")?;
     let body: Take<CountingRead<File>> = CountingRead { inner: f, n: counter.clone() }.take(csize);
     let reader: BoxRead = match method {
@@ -274,7 +357,7 @@ pub fn open_file(path: &Path) -> Result<ImageSource> {
         .file_name()
         .map(|s| s.to_string_lossy().into_owned())
         .unwrap_or_else(|| path.display().to_string());
-    let mut f = File::open(path).map_err(|e| {
+    let mut f = crate::sys::open_sequential(path).map_err(|e| {
         if e.kind() == std::io::ErrorKind::NotFound {
             NyError::new(ErrorKind::InvalidInput, format!("Image not found: {}", path.display()))
         } else {

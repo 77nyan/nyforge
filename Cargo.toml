@@ -4,17 +4,17 @@ members = ["crates/nyforge-core", "crates/nyforge-cli", "crates/nyforge-gui"]
 default-members = ["crates/nyforge-core", "crates/nyforge-cli", "crates/nyforge-gui"]
 
 [workspace.package]
-version = "0.1.6"
+version = "0.1.7"
 edition = "2021"
 license = "GPL-3.0-or-later"
 authors = ["NyForge contributors"]
-repository = "https://github.com/OWNER/nyforge"
+repository = "https://github.com/77nyan/nyforge"
 rust-version = "1.88"
 
 [profile.release]
 opt-level = 3
-lto = "thin"
-codegen-units = 4
+lto = "fat"
+codegen-units = 1
 strip = true
 panic = "abort"
 

@@ -21,7 +21,7 @@ COMMON="normal configfile echo test true false regexp search search_label search
  memrw cmp test eval source lsmmap boot linux chain"
 # NOTE: no ata/ahci/usbms/uhci/...: loading any native disk driver makes GRUB drop the BIOS
 # disk services (biosdisk), and then the boot disk "hd0" no longer exists.
-BIOS_ONLY="biosdisk linux16 multiboot multiboot2 \
+BIOS_ONLY="cpuid biosdisk linux16 multiboot multiboot2 \
  vbe vga vga_text video_bochs video_cirrus drivemap ntldr bsd"
 EFI_ONLY="efi_gop efi_uga efifwsetup efinet lsefi lsefimmap lsefisystab bli fwconfig shim_lock tpm \
  multiboot multiboot2 videoinfo"

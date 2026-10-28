@@ -1,21 +1,11 @@
-# Publishing NyForge to GitHub from the Omarchy terminal
+# Publishing NyForge 0.1.7 to GitHub (fresh start)
 
-This is a short, copy-and-paste guide for putting NyForge on GitHub and publishing a release with downloads for
-Linux, macOS and Windows. It assumes Omarchy (Arch Linux with Hyprland), but the commands work in any Linux terminal.
+This guide starts from nothing: a new, empty GitHub repository and the `nyforge-0.1.7-source.tar.gz` file. It is
+copy-and-paste, and it publishes a release with downloads for Linux, macOS and Windows.
+It assumes Omarchy (Arch Linux with Hyprland), but the commands work in any Linux terminal.
 
-Open a terminal with **Super + Enter**. Every command below is typed there.
-
-## 0. Get the project onto your machine
-
-Download `nyforge.bundle` (it holds the whole project and its history) into your home folder, then:
-
-```sh
-cd ~
-git clone nyforge.bundle nyforge
-cd nyforge
-```
-
-(If you got `nyforge-source.tar.gz` instead: `tar xzf nyforge-source.tar.gz && cd nyforge && git init -b main`.)
+Open a terminal with **Super + Enter**. Every command below is typed there. The GitHub user name used here is
+`77nyan` and the repository name is `nyforge`.
 
 ## 1. One-time setup
 
@@ -48,47 +38,55 @@ gh auth status          # should say you are logged in
 
 `gh` stores the login itself. Never paste a token or password into a file in the project.
 
-## 2. Put your GitHub name in the project
+You also need Rust to test the build (`sudo pacman -S rustup && rustup default stable`).
 
-The files contain the placeholder `OWNER` where your GitHub user name (or organization) belongs.
-Replace it once (here `yourname` is your GitHub user name):
+## 2. Unpack the project
+
+Download `nyforge-0.1.7-source.tar.gz` into your Downloads folder, then:
 
 ```sh
-cd path/to/nyforge
-grep -rn OWNER --exclude-dir=target --exclude-dir=.git .     # see where it is used
-sed -i 's#OWNER#yourname#g' Cargo.toml README.md
+cd ~
+tar xzf ~/Downloads/nyforge-0.1.7-source.tar.gz
+mv nyforge-0.1.7 nyforge
+cd nyforge
+ls                                   # Cargo.toml, README.md, install.sh, crates, ...
 ```
+
+The folder has no Git history. It is a clean start, and the repository you create below begins with one commit.
+The version is already set to 0.1.7 and the repository address already points to `github.com/77nyan/nyforge`.
 
 ## 3. Check that it builds
 
 ```sh
 cargo build --release -p nyforge -p nyforge-gui
 cargo test -p nyforge-core -p nyforge
-./target/release/nyforge-gui
+./target/release/nyforge-gui         # click around; the cog at the top right opens Settings
 ```
 
-(You need Rust: `sudo pacman -S rustup && rustup default stable`.)
+The first build takes a few minutes. You can also try the installer from the folder (it must be run with sudo, and
+it builds the app first):
+
+```sh
+sudo ./install.sh
+nyforge --version                    # nyforge 0.1.7
+sudo nyforge-uninstall               # take it off again if you only wanted to try it
+```
 
 ## 4. Create the repository and push
 
-The commits made while building the project carry placeholder author addresses (`dev@nyforge.invalid`). Give them
-your identity before the first push, so GitHub shows them as yours:
-
 ```sh
-git rebase -r --root --exec 'git commit --amend --no-edit --reset-author'
-git log --format='%an <%ae>' | sort -u          # should show only you
-```
-
-
-```sh
-git status                       # see what changed
+git init -b main
 git add -A
-git commit -m "NyForge 0.1.0: desktop app, installers and release workflow"
+git status                           # look at what is about to be published
+git commit -m "NyForge 0.1.7"
 gh repo create nyforge --public --source=. --remote=origin --push
 ```
 
-That creates `github.com/yourname/nyforge`, adds it as `origin` and uploads everything. Use `--private` instead of
+That creates `github.com/77nyan/nyforge`, adds it as `origin` and uploads everything. Use `--private` instead of
 `--public` if you want to look at it first (GitHub Actions work on private repositories too, with a monthly limit).
+
+If `gh repo create` says the name is taken, you already have a repository called `nyforge`. Either delete it on
+GitHub first (**Settings > Danger Zone**) or pick another name and change the address in `Cargo.toml`.
 
 Nothing in the repository is secret: there are no keys or tokens, and `.gitignore` keeps build output (`target/`,
 `dist/`) and disk images out. Run `git status` before every commit to see what you are about to publish.
@@ -107,7 +105,7 @@ Every push runs the **CI** workflow on Linux, macOS and Windows machines at GitH
 
 ```sh
 gh run list --limit 5
-gh run watch                     # follow the newest run live
+gh run watch                         # follow the newest run live
 ```
 
 Or open the **Actions** tab of the repository. Fix anything red before you release. Two steps
@@ -125,35 +123,30 @@ gh run watch
 This builds the Linux, macOS and Windows downloads and keeps them as run artifacts (Actions tab, bottom of
 the run) without creating a release. Download them and try them on real machines before you tag.
 
-## 7. Publish a release
+## 7. Publish the release
 
-The version number lives in one place: `version = "0.1.0"` under `[workspace.package]` in `Cargo.toml`.
-The tag must match it (`v0.1.0` for `0.1.0`); the workflow refuses to publish otherwise.
+The version number lives in one place: `version = "0.1.7"` under `[workspace.package]` in `Cargo.toml`.
+The tag must match it (`v0.1.7` for `0.1.7`); the workflow refuses to publish otherwise.
 
 ```sh
-# only when you are releasing a new version, e.g. 0.1.1:
-sed -i 's/^version = "0.1.0"/version = "0.1.1"/' Cargo.toml
-cargo build                      # refreshes Cargo.lock
-git add -A && git commit -m "Version 0.1.1"
-git push
-
-git tag v0.1.1
-git push origin v0.1.1
+git tag v0.1.7
+git push origin v0.1.7
+gh run watch
 ```
 
-Pushing the tag starts the **Release** workflow. When it finishes (watch with `gh run watch`), the release appears
-with these files, each with a `.sha256` checksum:
+Pushing the tag starts the **Release** workflow. When it finishes, the release appears with these files, each with a
+`.sha256` checksum:
 
-* `nyforge-<version>-linux-x86_64.tar.gz` (app and command line)
-* `nyforge-<version>-macos-universal.tar.gz` (NyForge.app and command line)
-* `nyforge-<version>-windows-x86_64.zip` (app and command line)
-* `nyforge-cli-<version>-linux-*.tar.gz` (command line only: older Linux, ARM64, Alpine)
+* `nyforge-0.1.7-linux-x86_64.tar.gz` (app and command line)
+* `nyforge-0.1.7-macos-universal.tar.gz` (NyForge.app and command line)
+* `nyforge-0.1.7-windows-x86_64.zip` (app and command line)
+* `nyforge-cli-0.1.7-linux-*.tar.gz` (command line only: older Linux, ARM64, Alpine)
 
-Check it and polish the notes:
+Check it and write the release notes:
 
 ```sh
-gh release view v0.1.1
-gh release edit v0.1.1 --notes "What is new, and what has not been tested yet."
+gh release view v0.1.7
+gh release edit v0.1.7 --notes "Huge update! A new optional tool, NyTest (speed, health and capacity tests for USB sticks and SD cards; switch it on in Settings, the cog at the top right), a Settings page to reorder the start screen, a new NyBoot menu with custom themes and Memtest86+, a refreshed app, and many fixes. Full list: CHANGELOG.md"
 ```
 
 Be honest in the notes: say which systems you tested on. The README's "What has been tested" section is the
@@ -162,7 +155,7 @@ place to keep that list up to date.
 If a release goes wrong, delete it and its tag and try again:
 
 ```sh
-gh release delete v0.1.1 --cleanup-tag --yes
+gh release delete v0.1.7 --cleanup-tag --yes
 ```
 
 ### Releasing by hand (Linux build only)
@@ -170,18 +163,29 @@ gh release delete v0.1.1 --cleanup-tag --yes
 If you just want the Linux download without waiting for CI:
 
 ```sh
-tools/package-unix.sh            # writes dist/nyforge-<version>-linux-x86_64.tar.gz (+ .sha256)
-gh release create v0.1.1 dist/nyforge-0.1.1-linux-x86_64.tar.gz dist/nyforge-0.1.1-linux-x86_64.tar.gz.sha256 \
-  --title "NyForge 0.1.1" --generate-notes
+tools/package-unix.sh                # writes dist/nyforge-0.1.7-linux-x86_64.tar.gz (+ .sha256)
+gh release create v0.1.7 dist/nyforge-0.1.7-linux-x86_64.tar.gz dist/nyforge-0.1.7-linux-x86_64.tar.gz.sha256 \
+  --title "NyForge 0.1.7" --notes "Huge update! See CHANGELOG.md for the full list."
 ```
 
 macOS and Windows files can only be built on those systems, which is what the workflow does for you.
 
-## 8. Things only you can do
+## 8. Next versions
+
+Change the version in `Cargo.toml` (for example to 0.1.8), build once so `Cargo.lock` follows, commit, push, and tag:
+
+```sh
+sed -i 's/^version = "0.1.7"/version = "0.1.8"/' Cargo.toml
+cargo build
+git add -A && git commit -m "Version 0.1.8" && git push
+git tag v0.1.8 && git push origin v0.1.8
+```
+
+## 9. Things only you can do
 
 * Code-sign the Windows build and sign and notarize the macOS app. Until then Windows SmartScreen and macOS
   Gatekeeper warn on first start (the README tells users how to continue). Signing needs certificates and an Apple
   developer account, so it is not set up here, and no secret should ever be committed for it: use GitHub
   **Settings > Secrets and variables > Actions** if you add it later.
-* Test on real machines with a spare USB stick: macOS and Windows have never run the app before CI.
-* Add screenshots of your own to `docs/screenshots` and the README once you have run the app on your systems.
+* Test on real machines with a spare USB stick: macOS and Windows have never run the app before CI. The Windows
+  "finished" notification in particular has only been checked by reading the code.

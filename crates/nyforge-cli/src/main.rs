@@ -7,12 +7,12 @@
 mod boot;
 mod format_cmd;
 mod setup;
+mod test_cmd;
 mod ui;
 mod verify_cmd;
 mod windows;
 
 use clap::{Args, Parser, Subcommand};
-use nyforge_core::clone::{clone_to_file, Compression};
 use nyforge_core::device::{self, Drive, ResolvedTarget, Safety, TargetPolicy};
 use nyforge_core::error::{ErrorKind, NyError};
 use nyforge_core::format::{human_size, human_speed};
@@ -54,8 +54,8 @@ enum Cmd {
     Inspect(InspectArgs),
     /// Write an image to one or more drives
     Flash(FlashArgs),
-    /// Copy a drive into an image file (compressed if the name ends in .gz, .zst or .xz)
-    Clone(CloneArgs),
+    /// NyTest: speed (like CrystalDiskMark), sustained write, surface scan, capacity check and health of a USB drive or SD card
+    Test(test_cmd::TestArgs),
     /// Set host name, user, SSH and Wi-Fi on a Raspberry Pi style image that is already on a drive
     Setup(setup::SetupCmd),
     /// Make a bootable Windows installer from a Windows ISO (splits install.wim for FAT32)
@@ -135,25 +135,11 @@ struct FlashArgs {
     /// When the write is done, read the drive back and compare it with the image (needs a local file, not a URL)
     #[arg(long)]
     verify: bool,
+    /// When everything is written (and verified), detach the drive so it can be unplugged right away (Linux and macOS)
+    #[arg(long)]
+    eject: bool,
     #[command(flatten)]
     setup: setup::SetupArgs,
-}
-
-#[derive(Args)]
-struct CloneArgs {
-    /// Drive to read, e.g. /dev/sdb
-    drive: String,
-    /// Image file to create
-    output: String,
-    /// Replace the output file if it exists
-    #[arg(long)]
-    force: bool,
-    #[arg(long)]
-    allow_internal: bool,
-    #[arg(long)]
-    allow_virtual: bool,
-    #[arg(long)]
-    json: bool,
 }
 
 pub(crate) const EXIT_FAIL: u8 = 1;
@@ -175,7 +161,7 @@ fn main() -> ExitCode {
         Cmd::List(a) => a.json,
         Cmd::Inspect(a) => a.json,
         Cmd::Flash(a) => a.json,
-        Cmd::Clone(a) => a.json,
+        Cmd::Test(a) => a.json,
         Cmd::Doctor(a) => a.json,
         Cmd::Boot(b) => boot_json(b),
         Cmd::Windows(a) => a.json,
@@ -188,7 +174,7 @@ fn main() -> ExitCode {
         Cmd::List(a) => cmd_list(a),
         Cmd::Inspect(a) => cmd_inspect(a),
         Cmd::Flash(a) => cmd_flash(a),
-        Cmd::Clone(a) => cmd_clone(a),
+        Cmd::Test(a) => test_cmd::run(a),
         Cmd::Doctor(a) => cmd_doctor(a),
         Cmd::Boot(b) => boot::run(b),
         Cmd::Windows(a) => windows::run(a),
@@ -214,6 +200,26 @@ fn main() -> ExitCode {
 
 pub(crate) type Res = Result<u8, NyError>;
 
+/// `--eject`: detach the drive and say what happened (a failure is only a note: the data is already safe).
+pub(crate) fn eject_note(t: &Target, json: bool, ui: &Ui) {
+    if t.drive.is_none() {
+        return;
+    }
+    let out = nyforge_core::sys::eject(&t.path);
+    if json {
+        let message = match &out {
+            nyforge_core::sys::Eject::Done => format!("{} was ejected: you can unplug it.", t.display),
+            nyforge_core::sys::Eject::Unavailable(why) => format!("Could not eject {} automatically ({why}).", t.display),
+        };
+        print_event(&Event::Log { message });
+        return;
+    }
+    match out {
+        nyforge_core::sys::Eject::Done => eprintln!("{} {} was ejected: you can unplug it.", ui.green("✔"), t.display),
+        nyforge_core::sys::Eject::Unavailable(why) => eprintln!("Could not eject {} automatically ({why}). The data is written; unplug it the usual way.", t.display),
+    }
+}
+
 fn boot_json(b: &boot::BootCmd) -> bool {
     use boot::BootCmd::*;
     match b {
@@ -222,6 +228,10 @@ fn boot_json(b: &boot::BootCmd) -> bool {
         Ls(a) => a.common.json,
         Rm(a) => a.common.json,
         Check(a) => a.json,
+        Update(a) => a.common.json,
+        Config(a) => a.common.json,
+        Params(a) => a.common.json,
+        Theme(a) => a.common.json,
     }
 }
 
@@ -501,6 +511,13 @@ fn cmd_flash(a: FlashArgs) -> Res {
                     eprintln!("{} of {} drives finished.", ok, report.targets.len());
                 }
             }
+            if a.eject && touches_drive {
+                for t in report.targets.iter().filter(|t| t.ok) {
+                    if let Some(tg) = setup_targets.iter().find(|x| x.display == t.target) {
+                        eject_note(tg, json, &renderer);
+                    }
+                }
+            }
             let mut code = if report.all_ok() { 0 } else { EXIT_PARTIAL };
             if let Some(fb) = &firstboot {
                 for t in report.targets.iter().filter(|t| t.ok) {
@@ -529,53 +546,6 @@ fn cmd_flash(a: FlashArgs) -> Res {
             Err(e)
         }
     }
-}
-
-// ---------------------------------------------------------------------- clone
-
-fn cmd_clone(a: CloneArgs) -> Res {
-    let policy = TargetPolicy { allow_internal: true, allow_virtual: true };
-    let _ = (a.allow_internal, a.allow_virtual);
-    let drive = match device::resolve_target(&a.drive, policy)? {
-        ResolvedTarget::Device(d) => d,
-        ResolvedTarget::File { .. } => {
-            return Err(NyError::invalid(format!("{} is not a drive.", a.drive)).with_hint("Run `nyforge list --all` to see drives."))
-        }
-    };
-    if !is_root() {
-        return Err(NyError::new(ErrorKind::Permission, "Reading a whole drive needs administrator rights.")
-            .with_hint(rerun_hint(&format!("nyforge clone {} {}", a.drive, a.output))));
-    }
-    let out = Path::new(&a.output);
-    if out.exists() && !a.force {
-        return Err(NyError::new(ErrorKind::InvalidInput, format!("{} already exists.", a.output)).with_hint("Add --force to replace it."));
-    }
-    let comp = Compression::from_path(out);
-    let cancel = install_ctrlc();
-    let mut renderer = Ui::new();
-    let json = a.json;
-    let mut emit = |ev: Event| {
-        if json {
-            crate::print_event(&ev);
-        } else {
-            renderer.render(&ev);
-        }
-    };
-    let label = format!("{} ({})", drive.path, drive.display_name());
-    let r = clone_to_file(Path::new(&drive.path), drive.size, &label, out, comp, cancel, &mut emit);
-    renderer.finish_line();
-    let report = r?;
-    if !json {
-        eprintln!(
-            "{} Saved {} of {} to {} ({}).",
-            renderer.green("✔"),
-            human_size(report.image_bytes),
-            drive.path,
-            a.output,
-            comp.name()
-        );
-    }
-    Ok(0)
 }
 
 // --------------------------------------------------------------------- doctor

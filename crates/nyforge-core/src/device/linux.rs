@@ -335,6 +335,22 @@ pub(crate) fn list_with(paths: &SysPaths, mountinfo: &str, swaps: &str, probe: b
             }
         }
         partitions.sort_by_key(|p| p.number);
+        // A file system straight on the disk (no partition table, common on old sticks and SD cards): show it as
+        // "partition 0" so that its mount points are known and the drive is not mistaken for an idle one.
+        if partitions.is_empty() {
+            if let Some(mps) = part_mounts.get(&name) {
+                let (mut fstype, mut label) = (props.get("ID_FS_TYPE").cloned(), props.get("ID_FS_LABEL").cloned());
+                if fstype.is_none() && probe && !is_system {
+                    let info = fsprobe::probe_path(&paths.dev.join(&name));
+                    fstype = info.fstype;
+                    label = label.or(info.label);
+                }
+                let mut mps = mps.clone();
+                mps.sort();
+                mps.dedup();
+                partitions.push(Partition { path: paths.dev.join(&name).to_string_lossy().into_owned(), number: 0, size, fstype, label, mountpoints: mps });
+            }
+        }
 
         drives.push(Drive {
             path: paths.dev.join(&name).to_string_lossy().into_owned(),
@@ -367,6 +383,10 @@ pub fn unmount_drive(drive: &Drive) -> Result<Vec<String>> {
         let r = unsafe { libc::umount2(c.as_ptr(), 0) };
         if r != 0 {
             let e = std::io::Error::last_os_error();
+            // EINVAL: not a mount point any more (something else got there first, or it was unmounted a moment ago).
+            if e.raw_os_error() == Some(libc::EINVAL) {
+                continue;
+            }
             return Err(NyError::from_io(&e, &format!("unmounting {mp}")));
         }
         done.push(mp);

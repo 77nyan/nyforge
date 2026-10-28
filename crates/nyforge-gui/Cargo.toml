@@ -1,6 +1,6 @@
 [package]
 name = "nyforge-gui"
-description = "NyForge desktop app: NyFlash, NyBoot and NyFormat"
+description = "NyForge desktop app: NyFlash, NyBoot, NyFormat and NyTest"
 version.workspace = true
 edition.workspace = true
 license.workspace = true

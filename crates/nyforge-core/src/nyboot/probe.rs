@@ -36,6 +36,12 @@ pub struct WindowsInfo {
     pub bios_bootmgr: bool,
     /// The ISO brings its own `autounattend.xml` (custom builds such as Tiny10/Tiny11 do): it is kept as it is.
     pub own_unattend: bool,
+    /// What kind of Windows disc this looks like, in words ("Windows 10/11 installer", "Windows PE / rescue disc", …).
+    pub kind: String,
+    /// Build architecture from `sources/idwbinfo.txt` ("amd64", "x86", "arm64"), when the ISO says.
+    pub arch: Option<String>,
+    /// Things worth knowing before writing it: limits of this exact ISO and of the drive NyForge will make from it.
+    pub warnings: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -63,6 +69,79 @@ fn first_line(iso: &IsoImage, path: &str) -> Option<String> {
     let b = iso.read_all(&e, 64 * 1024).ok()?;
     let s = String::from_utf8_lossy(&b);
     s.lines().map(str::trim).find(|l| !l.is_empty()).map(str::to_string)
+}
+
+/// `key=value` from a small text file of the ISO.
+fn ini_value(iso: &IsoImage, path: &str, key: &str) -> Option<String> {
+    let e = iso.find(path).ok()??;
+    let b = iso.read_all(&e, 64 * 1024).ok()?;
+    let s = String::from_utf8_lossy(&b);
+    s.lines().find_map(|l| {
+        let (k, v) = l.split_once('=')?;
+        k.trim().eq_ignore_ascii_case(key).then(|| v.trim().to_string())
+    })
+}
+
+/// Smart recognition of what kind of Windows disc this is, and what that means for making a drive from it. Everything
+/// here is read from the ISO's own files; nothing is guessed from the file name.
+fn recognise_windows(iso: &IsoImage, mut w: WindowsInfo) -> WindowsInfo {
+    let ex = |p: &str| iso.find(p).ok().flatten().is_some();
+    w.arch = ini_value(iso, "sources/idwbinfo.txt", "BuildArch").map(|a| a.to_ascii_lowercase());
+    let has_swm = ex("sources/install.swm");
+    let efi_ms = iso.find("efi/microsoft/boot").ok().flatten().is_some();
+    let ia32 = ex("EFI/BOOT/BOOTIA32.EFI");
+    let win11_hint = ex("sources/hwreqchk.dll") || (ex("sources/appraiserres.dll") && ex("sources/compatresources.dll"));
+    let big_other = iso.walk(1_000_000).map(|f| f.into_iter().any(|(p, sz)| sz > FAT32_MAX_FILE && !p.eq_ignore_ascii_case("sources/install.wim"))).unwrap_or(false);
+
+    let legacy = !w.uefi_x64 && !w.uefi_arm64 && w.bios_bootmgr && efi_ms;
+    let arch_word = match w.arch.as_deref() {
+        Some("amd64") => " 64-bit",
+        Some("x86") => " 32-bit",
+        Some("arm64") => " ARM64",
+        _ => "",
+    };
+    w.kind = if w.install_image.is_none() && !has_swm {
+        "Windows PE / rescue disc (no install image)".into()
+    } else if win11_hint {
+        format!("Windows 11{arch_word} installer")
+    } else if legacy {
+        format!("Windows 7-era{arch_word} installer")
+    } else {
+        format!("Windows{arch_word} installer")
+    };
+    if w.install_image.is_none() && !has_swm {
+        w.warnings.push("This disc has no install.wim or install.esd, so it is a rescue or deployment disc (Windows PE), not a Windows installer. NyForge copies it and it starts, but there is no Windows to install from it.".into());
+    }
+    if has_swm {
+        w.warnings.push("The install image is already split (install.swm). NyForge copies it as it is.".into());
+    }
+    if !w.uefi_x64 && !w.uefi_arm64 && w.bios_bootmgr {
+        if ia32 {
+            w.warnings.push("This disc only has 32-bit UEFI boot files. Most computers that can start it are old; the drive is made as usual.".into());
+        } else if efi_ms {
+            w.warnings.push("This is an older Windows disc (it has no \\EFI\\BOOT\\BOOTX64.EFI). The drive starts on legacy BIOS computers; UEFI computers need Windows 8 or newer media.".into());
+        } else {
+            w.warnings.push("This disc has no UEFI boot files, so the drive starts on legacy BIOS computers only.".into());
+        }
+    }
+    if w.uefi_arm64 && !w.uefi_x64 {
+        w.warnings.push("This is an ARM64 Windows disc. It starts only on ARM64 computers.".into());
+    }
+    if let Some(a) = &w.arch {
+        if a == "x86" && w.uefi_x64 {
+            w.warnings.push("The build says 32-bit (x86) but the disc has 64-bit UEFI files; that is unusual. Tell us if it does not start.".into());
+        }
+    }
+    if big_other {
+        w.warnings.push("The disc has a file over 4 GB that is not install.wim. FAT32 cannot hold it, so the drive is made with NTFS and a small UEFI:NTFS boot partition (UEFI computers only).".into());
+    }
+    if w.exceeds_fat32 && w.install_image.as_deref() == Some("install.esd") {
+        w.warnings.push("The install.esd is over 4 GB and cannot be split, so the drive is made with NTFS and a small UEFI:NTFS boot partition (UEFI computers only, Linux and Windows only).".into());
+    }
+    if w.own_unattend {
+        w.warnings.push("The disc has its own autounattend.xml (a custom build such as Tiny10 or Tiny11). NyForge keeps it exactly as it is.".into());
+    }
+    w
 }
 
 fn treeinfo_name(iso: &IsoImage) -> Option<String> {
@@ -181,7 +260,12 @@ pub fn analyze(iso: &IsoImage, size: u64) -> Result<IsoReport> {
             uefi_arm64: ex("EFI/BOOT/BOOTAA64.EFI"),
             bios_bootmgr: ex("bootmgr"),
             own_unattend: ex("autounattend.xml"),
+            kind: String::new(),
+            arch: None,
+            warnings: vec![],
         };
+        let w = recognise_windows(iso, w);
+        notes.extend(w.warnings.iter().cloned());
         if w.exceeds_fat32 {
             notes.push(format!(
                 "The install image is {}: bigger than FAT32 allows in one file. `nyforge windows` splits it automatically.",

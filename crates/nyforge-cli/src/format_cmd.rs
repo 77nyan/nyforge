@@ -33,9 +33,15 @@ pub struct FormatArgs {
     /// Make several partitions instead: fs[:size[:label[:cluster]]], repeat for each, e.g. --partition fat32:16G:WIN --partition ext4::LINUX
     #[arg(long = "partition", value_name = "SPEC")]
     pub partitions: Vec<String>,
-    /// How to erase the old contents: quick (partition tables only), zero (every byte), random (every byte)
+    /// How to erase the old contents: quick (partition tables only), zero (every byte), random (every byte), discard (TRIM: ask the drive to forget its blocks, where it can)
     #[arg(long, default_value = "quick", value_name = "MODE")]
     pub wipe: String,
+    /// How many times --wipe zero or random goes over the drive, 1 to 7 (every pass but the last writes random data)
+    #[arg(long, value_name = "N", default_value_t = 1)]
+    pub wipe_passes: u8,
+    /// After --wipe zero or random, read the whole drive back and check the wipe really stuck
+    #[arg(long)]
+    pub verify_wipe: bool,
     /// Check that the drive really holds what it claims (finds counterfeit sticks): quick (default when given) or full
     #[arg(long, value_name = "MODE", num_args = 0..=1, default_missing_value = "quick")]
     pub test_capacity: Option<String>,
@@ -65,6 +71,19 @@ pub struct FormatArgs {
     /// and whenever Windows' tools do not manage; windows: only Windows' tools; own: only NyForge's writer
     #[arg(long, value_name = "WHO", default_value = "auto")]
     pub engine: String,
+    /// Repair a drive that will not format or shows the wrong size: say what is wrong with it, clear the write-protect
+    /// flag where the system allows it, and wipe the old partitions' leftovers from the ends of the drive first
+    #[arg(long)]
+    pub repair: bool,
+    /// Start every partition on a multiple of this size: 1M (default), 2M, 4M (SD cards: matches their erase blocks), 8M or 16M
+    #[arg(long, value_name = "SIZE", default_value = "1M")]
+    pub align: String,
+    /// MBR only: mark the first partition active (bootable), for old BIOS computers that boot a drive's own boot code
+    #[arg(long)]
+    pub bootable: bool,
+    /// Skip the check that reads the partition table and filesystem signatures back when the format is done
+    #[arg(long)]
+    pub no_verify_result: bool,
     /// Do not ask for confirmation
     #[arg(short = 'y', long)]
     pub yes: bool,
@@ -185,6 +204,12 @@ pub fn run(a: FormatArgs) -> Res {
         Some(s) => s.parse().map_err(NyError::invalid)?,
     };
     let wipe: Wipe = a.wipe.parse().map_err(NyError::invalid)?;
+    if !(1..=usbformat::MAX_WIPE_PASSES).contains(&a.wipe_passes) {
+        return bad(format!("--wipe-passes must be between 1 and {}.", usbformat::MAX_WIPE_PASSES));
+    }
+    if (a.wipe_passes > 1 || a.verify_wipe) && !matches!(wipe, Wipe::Zero | Wipe::Random) {
+        return bad("--wipe-passes and --verify-wipe go with --wipe zero or --wipe random.".to_string());
+    }
     let capacity_test = match a.test_capacity.as_deref() {
         None | Some("off") => CapacityTest::Off,
         Some("quick") => CapacityTest::Quick,
@@ -207,7 +232,26 @@ pub fn run(a: FormatArgs) -> Res {
         return bad("--passes needs --check-bad-blocks (or --test-capacity full).".to_string());
     }
     let engine: usbformat::Engine = a.engine.parse().map_err(NyError::invalid)?;
-    let opts = FormatOptions { passes: a.passes, parts, scheme, wipe, capacity_test, fit_real_capacity: a.fit_real_capacity, reserve_bytes, file_size, unmount: true, owner, engine };
+    let align_bytes = parse_size(&a.align).ok_or_else(|| NyError::invalid(format!("\"{}\" is not an alignment like 4M.", a.align)))?;
+    let opts = FormatOptions {
+        passes: a.passes,
+        wipe_passes: a.wipe_passes,
+        verify_wipe: a.verify_wipe,
+        parts,
+        scheme,
+        wipe,
+        capacity_test,
+        fit_real_capacity: a.fit_real_capacity,
+        reserve_bytes,
+        file_size,
+        unmount: true,
+        owner,
+        engine,
+        repair: a.repair,
+        align_bytes,
+        bootable: a.bootable,
+        verify_result: !a.no_verify_result,
+    };
 
     // ---- confirm
     if let Some(d) = &target.drive {

@@ -30,6 +30,25 @@ struct ImageSel {
     windows_installer: bool,
     /// What the ISO holds, when it is a Windows installer (install image, size, own answer file).
     win: Option<nyforge_core::nyboot::probe::WindowsInfo>,
+    /// Set for images (Void, the BSDs) whose own boot partition other systems rewrite, so a read-back may differ there.
+    verify_heads_up: Option<String>,
+}
+
+/// The first bytes of an image (decompressed), enough to read its partition table. `None` when it cannot be read.
+fn read_head(path: &std::path::Path) -> Option<Vec<u8>> {
+    use std::io::Read;
+    let mut src = image::open(&path.to_string_lossy()).ok()?;
+    let mut head = vec![0u8; 64 * 1024];
+    let mut n = 0;
+    while n < head.len() {
+        match src.reader.read(&mut head[n..]) {
+            Ok(0) => break,
+            Ok(k) => n += k,
+            Err(_) => return None,
+        }
+    }
+    head.truncate(n);
+    Some(head)
 }
 
 impl ImageSel {
@@ -60,8 +79,48 @@ enum RunKind {
 #[derive(Clone)]
 struct Written {
     windows: bool,
-    bypass: bool,
+    /// The setup-option flags the installer was made with (read back the same way).
+    answers: Vec<String>,
     bios: bool,
+}
+
+/// The Windows setup options ticked on the screen.
+#[derive(Clone, Default)]
+struct WinAnswers {
+    skip_online: bool,
+    local: bool,
+    local_name: String,
+    privacy: bool,
+    bitlocker: bool,
+    locale: bool,
+}
+
+impl WinAnswers {
+    fn name_problem(&self) -> Option<String> {
+        if !self.local {
+            return None;
+        }
+        nyforge_core::winmedia::check_account_name(&self.local_name).err().map(|e| e.message)
+    }
+
+    fn flags(&self) -> Vec<String> {
+        let mut v = vec![];
+        if self.local {
+            v.extend(["--local-account".to_string(), self.local_name.clone()]);
+        } else if self.skip_online {
+            v.push("--skip-online-account".into());
+        }
+        if self.privacy {
+            v.push("--skip-privacy-questions".into());
+        }
+        if self.bitlocker {
+            v.push("--disable-bitlocker".into());
+        }
+        if self.locale {
+            v.extend(["--locale".to_string(), "auto".to_string()]);
+        }
+        v
+    }
 }
 
 pub struct FlashScreen {
@@ -80,10 +139,13 @@ pub struct FlashScreen {
     win_as_is: bool,
     /// Windows 11: skip the TPM, Secure Boot and RAM checks in Setup.
     win_bypass: bool,
+    win_answers: WinAnswers,
     /// Also make the installer start on old BIOS computers.
     win_bios: bool,
     /// Read the drive back when the write is done (can be switched on while it runs).
     verify_after: bool,
+    /// Detach the drive when the write (and check) is done. Not offered on Windows.
+    eject_after: bool,
     check: ChecksumDialog,
     kind: RunKind,
     written: Option<Written>,
@@ -105,8 +167,10 @@ impl FlashScreen {
             outcome: None,
             win_as_is: false,
             win_bypass: false,
+            win_answers: WinAnswers::default(),
             win_bios: true,
             verify_after: false,
+            eject_after: false,
             check: ChecksumDialog::new(),
             kind: RunKind::Flash,
             written: None,
@@ -153,7 +217,8 @@ impl FlashScreen {
                 let report = if name.to_ascii_lowercase().ends_with(".iso") { probe::analyze_file(&path).ok().filter(|r| r.verdict == Verdict::WindowsInstaller) } else { None };
                 let windows_installer = report.is_some();
                 let win = report.and_then(|r| r.windows);
-                Ok(ImageSel { name, file_size: meta.len(), info, windows_installer, win, path })
+                let verify_heads_up = if windows_installer { None } else { read_head(&path).and_then(|h| nyforge_core::verify::verify_heads_up(&h, &name, info.decompressed_size)) };
+                Ok(ImageSel { name, file_size: meta.len(), info, windows_installer, win, verify_heads_up, path })
             })();
             let _ = tx.send(r);
             c.request_repaint();
@@ -179,10 +244,15 @@ impl FlashScreen {
         let own_answers = img.win.as_ref().is_some_and(|w| w.own_unattend);
         let bypass = self.win_bypass && !own_answers;
         let mut args = vec![if win { "windows" } else { "flash" }.to_string(), img.path.to_string_lossy().into_owned(), cand.drive.path.clone(), "-y".to_string()];
+        let mut answers: Vec<String> = vec![];
         if win {
             if bypass {
-                args.push("--bypass-checks".into());
+                answers.push("--bypass-checks".into());
             }
+            if !own_answers {
+                answers.extend(self.win_answers.flags());
+            }
+            args.extend(answers.iter().cloned());
             if !self.win_bios {
                 args.push("--uefi-only".into());
             }
@@ -190,8 +260,11 @@ impl FlashScreen {
         if self.verify_after {
             args.push("--verify".into());
         }
+        if self.eject_after && !cfg!(windows) {
+            args.push("--eject".into());
+        }
         args.extend(drives::engine_flags(&cand));
-        self.written = Some(Written { windows: win, bypass, bios: self.win_bios });
+        self.written = Some(Written { windows: win, answers, bios: self.win_bios });
         self.kind = if win { RunKind::Windows } else { RunKind::Flash };
         self.run = Some(Run::new(worker::spawn(args, ctx.clone()), true));
         self.target = Some(cand);
@@ -207,9 +280,7 @@ impl FlashScreen {
         let mut args = vec!["verify".to_string(), img.path.to_string_lossy().into_owned(), cand.drive.path.clone()];
         if w.windows {
             args.push("--windows".into());
-            if w.bypass {
-                args.push("--bypass-checks".into());
-            }
+            args.extend(w.answers.iter().cloned());
             if !w.bios {
                 args.push("--uefi-only".into());
             }
@@ -266,6 +337,14 @@ impl FlashScreen {
             if matches!(self.stage, Stage::Running) && run.is_done() {
                 self.outcome = Some(run.outcome());
                 self.stage = Stage::Done;
+                let (ok, what) = match self.kind {
+                    RunKind::VerifyOnly => ("Drive verified", "The drive matches the image."),
+                    RunKind::Windows => ("Windows installer ready", "You can unplug the drive."),
+                    RunKind::Flash => ("Flash complete", "You can unplug the drive."),
+                };
+                if let Some(o) = &self.outcome {
+                    crate::notify::job_done(&ctx, "NyFlash", ok, what, o);
+                }
             }
         }
         if matches!(self.stage, Stage::Setup) {
@@ -306,8 +385,10 @@ impl FlashScreen {
             Some("Select the drive to write to.".into())
         } else if let Some((need, have)) = too_small {
             Some(format!("The image needs {} but this drive holds {}.", human_size(need), human_size(have)))
-        } else if self.windows_mode() && self.image.as_ref().and_then(|i| i.win.as_ref()).is_some_and(|w| w.exceeds_fat32 && w.install_image.as_deref() == Some("install.esd")) {
-            Some("This install.esd is too big for FAT32 (see above).".into())
+        } else if self.windows_mode() && cfg!(target_os = "macos") && self.image.as_ref().and_then(|i| i.win.as_ref()).is_some_and(|w| w.exceeds_fat32 && w.install_image.as_deref() == Some("install.esd")) {
+            Some("This install.esd needs an NTFS drive, which macOS cannot write (see above).".into())
+        } else if let Some(p) = self.windows_mode().then(|| self.win_answers.name_problem()).flatten() {
+            Some(p)
         } else if self.step.is_some() {
             Some("Checking the drive…".into())
         } else {
@@ -397,9 +478,28 @@ impl FlashScreen {
         if img_ok {
             // Small and optional: read the drive back when the write is done (also switchable while it runs).
             ui.vertical_centered(|ui| {
-                ui.checkbox(&mut self.verify_after, "Verify when done").on_hover_text("Reads the drive back afterwards and compares it with the image. Takes about as long as the write.");
+                ui.horizontal(|ui| {
+                    // Centre the two small options as a pair.
+                    let w = ui.available_width();
+                    let pair = if cfg!(windows) { 140.0 } else { 300.0 };
+                    ui.add_space(((w - pair) / 2.0).max(0.0));
+                    ui.checkbox(&mut self.verify_after, "Verify when done").on_hover_text("Reads the drive back afterwards and compares it with the image. Takes about as long as the write.");
+                    if !cfg!(windows) {
+                        ui.add_space(10.0);
+                        ui.checkbox(&mut self.eject_after, "Eject when done").on_hover_text("Detaches the drive once everything is written (and verified), so you can unplug it right away.");
+                    }
+                });
             });
             ui.add_space(6.0);
+        }
+        if let Some(note) = self.image.as_ref().and_then(|i| i.verify_heads_up.clone()) {
+            let w = ui.available_width().min(560.0);
+            ui.vertical_centered(|ui| {
+                ui.allocate_ui_with_layout(vec2(w, 10.0), egui::Layout::top_down(egui::Align::Min), |ui| {
+                    banner(ui, Tone::Info, "Verify may show small differences on this image", &note, None);
+                });
+            });
+            ui.add_space(8.0);
         }
         if self.image.as_ref().is_some_and(|i| i.windows_installer) {
             let w = ui.available_width().min(560.0);
@@ -428,13 +528,33 @@ impl FlashScreen {
                         if esd_too_big {
                             ui.add_space(6.0);
                             let size = win.as_ref().map(|w| human_size(w.install_bytes)).unwrap_or_default();
-                            banner(
-                                ui,
-                                Tone::Error,
-                                "This installer cannot be made on a FAT32 drive",
-                                &format!("Its install.esd is {size}, more than FAT32 allows in one file, and the compact ESD format cannot be split."),
-                                Some("Use a build with install.wim, or one whose install.esd is under 4 GB."),
-                            );
+                            if cfg!(target_os = "macos") {
+                                banner(
+                                    ui,
+                                    Tone::Error,
+                                    "This installer needs an NTFS drive",
+                                    &format!("Its install.esd is {size}: too big for FAT32, and the compact ESD format cannot be split. macOS cannot write NTFS."),
+                                    Some("Make this installer on Windows or Linux, or use a build with install.wim."),
+                                );
+                            } else {
+                                banner(
+                                    ui,
+                                    Tone::Info,
+                                    "This installer is made on an NTFS drive",
+                                    &format!("Its install.esd is {size}: too big for FAT32, and the compact ESD format cannot be split. NyForge uses NTFS plus a small UEFI:NTFS boot partition instead. It starts on UEFI computers only (not legacy BIOS)."),
+                                    None,
+                                );
+                            }
+                        }
+                        ui.add_space(6.0);
+                        banner(ui, Tone::Warn, "Some Windows ISOs may not work", nyforge_core::winmedia::WINDOWS_CAVEAT, None);
+                        if let Some(w) = &win {
+                            let extra: Vec<&String> = w.warnings.iter().filter(|m| !m.contains("install.esd") && !m.contains("autounattend") && !m.contains("over 4 GB")).collect();
+                            if !extra.is_empty() {
+                                ui.add_space(6.0);
+                                let text = extra.iter().map(|m| m.as_str()).collect::<Vec<_>>().join("\n\n");
+                                banner(ui, Tone::Warn, &format!("About this disc ({})", w.kind), &text, None);
+                            }
                         }
                         if own {
                             ui.add_space(6.0);
@@ -451,7 +571,28 @@ impl FlashScreen {
                             ui.checkbox(&mut self.win_bypass, "Skip the Windows 11 hardware checks (TPM, Secure Boot, RAM)")
                                 .on_hover_text(if own { "Not needed: this ISO already has its own setup answers." } else { "Adds an answer file so Setup installs on computers it would normally refuse. Only for Windows 11." });
                         });
-                        ui.checkbox(&mut self.win_bios, "Also start on old BIOS computers (legacy boot)").on_hover_text("Untick for a UEFI-only drive.");
+                        ui.add_enabled_ui(!own, |ui| {
+                            ui.collapsing("More setup options", |ui| {
+                                let a = &mut self.win_answers;
+                                ui.add_enabled_ui(!a.local, |ui| {
+                                    ui.checkbox(&mut a.skip_online, "Skip the Microsoft account screens")
+                                        .on_hover_text("Windows starts without asking for a Microsoft account. Newer Windows builds may ignore this; the local account below always works.");
+                                });
+                                ui.checkbox(&mut a.local, "Create a local account").on_hover_text("An administrator account without a password, so first start needs no sign-in. Set a password in Windows afterwards.");
+                                if a.local {
+                                    ui.horizontal(|ui| {
+                                        ui.label(muted("Name"));
+                                        ui.add(egui::TextEdit::singleline(&mut a.local_name).desired_width(160.0).margin(egui::Margin::symmetric(8, 6)).char_limit(20));
+                                    });
+                                }
+                                ui.checkbox(&mut a.privacy, "Skip the privacy questions").on_hover_text("Windows does not ask the data-sharing questions at first start; they are switched off.");
+                                ui.checkbox(&mut a.bitlocker, "Turn off automatic BitLocker encryption").on_hover_text("Stops Windows from encrypting the drive by itself on devices that support it.");
+                                ui.checkbox(&mut a.locale, "Use this computer's language and region").on_hover_text("Sets the language and region of the new Windows to the ones this computer uses.");
+                            });
+                        });
+                        ui.add_enabled_ui(!esd_too_big, |ui| {
+                            ui.checkbox(&mut self.win_bios, "Also start on old BIOS computers (legacy boot)").on_hover_text(if esd_too_big { "Not possible with the NTFS layout this image needs." } else { "Untick for a UEFI-only drive." });
+                        });
                         if widgets::link_button(ui, "Write the ISO as it is instead", true).clicked() {
                             self.win_as_is = true;
                         }
@@ -571,9 +712,16 @@ impl FlashScreen {
                         }
                     }
                     if let Some((secs, _)) = verified {
-                        rows.push(("Verified", format!("Matches the image · read back in {}", super::fmt_duration(secs))));
+                        let exact = self.run.as_ref().is_none_or(|r| r.verified_note.is_none());
+                        rows.push(("Verified", format!("{} · read back in {}", if exact { "Matches the image" } else { "Matches, apart from one part (see below)" }, super::fmt_duration(secs))));
                     }
                     widgets::result_card(ui, &rows);
+                    if let Some(note) = self.run.as_ref().and_then(|r| r.verified_note.clone()) {
+                        ui.add_space(8.0);
+                        ui.allocate_ui(vec2(460.0, 10.0), |ui| {
+                            banner(ui, Tone::Info, "Not an exact match, and that is expected for this image", &note, Some("This is normal for images such as Void Linux and the BSDs. The drive is very likely fine."));
+                        });
+                    }
                 }
                 Outcome::Cancelled => {
                     status_mark(ui, Id::new("flash-mark"), Tone::Warn, true);

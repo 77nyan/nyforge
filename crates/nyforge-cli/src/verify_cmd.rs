@@ -9,7 +9,7 @@ use nyforge_core::error::{ErrorKind, NyError};
 use nyforge_core::format::{human_duration, human_size, human_speed};
 use nyforge_core::progress::Event;
 use nyforge_core::verify::{verify_image, VerifyOptions};
-use nyforge_core::winmedia::{verify_windows_media, Unattend, WindowsOptions};
+use nyforge_core::winmedia::{verify_windows_media, WindowsOptions};
 use nyforge_core::writer::Target;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::Ordering;
@@ -23,9 +23,9 @@ pub struct VerifyArgs {
     /// The drive holds a Windows installer made by `nyforge windows`: compare every file with the ISO
     #[arg(long)]
     pub windows: bool,
-    /// With --windows: the installer was made with --bypass-checks
-    #[arg(long, requires = "windows")]
-    pub bypass_checks: bool,
+    /// With --windows: the setup options the installer was made with (--bypass-checks, --local-account, …)
+    #[command(flatten)]
+    pub answers: crate::windows::AnswerArgs,
     /// With --windows: the installer was made with --uefi-only
     #[arg(long, requires = "windows")]
     pub uefi_only: bool,
@@ -52,6 +52,17 @@ pub fn verify_after(image: &str, target: &Target, direct: bool, json: bool, ui: 
     let rep = r?;
     if !json {
         let secs = rep.elapsed.as_secs_f64();
+        if let Some(note) = &rep.note {
+            eprintln!(
+                "{} Read back {} on {} ({}): {}\n  This is normal for images such as Void Linux and the BSDs; the drive is very likely fine.",
+                ui.bold("!"),
+                human_size(rep.bytes),
+                target.display,
+                human_duration(secs),
+                note
+            );
+            return Ok(());
+        }
         eprintln!(
             "{} Verified {} on {}: it matches the image ({}, {}).",
             ui.green("✔"),
@@ -92,7 +103,7 @@ pub fn run(a: VerifyArgs) -> Res {
     let cancel = install_ctrlc();
     let mut ui = Ui::new();
     if a.windows {
-        let opts = WindowsOptions { bios: !a.uefi_only, unattend: Unattend { bypass_hardware_checks: a.bypass_checks }, ..Default::default() };
+        let opts = WindowsOptions { bios: !a.uefi_only, unattend: a.answers.to_unattend()?, ..Default::default() };
         verify_windows_after(Path::new(&a.image), &target, &opts, a.json, &mut ui, cancel)?;
     } else {
         verify_after(&a.image, &target, !a.no_direct, a.json, &mut ui, cancel)?;

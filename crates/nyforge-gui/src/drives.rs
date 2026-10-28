@@ -13,6 +13,9 @@ pub enum Purpose {
     Flash,
     Boot,
     Format,
+    /// NyTest: removable drives only (USB sticks, SD cards); never an internal disk. Writing tests are offered only for
+    /// drives that may be erased.
+    Test,
 }
 
 #[derive(Clone, PartialEq, Eq, Debug)]
@@ -94,6 +97,12 @@ fn candidate(d: Drive, blocked: Option<String>) -> Candidate {
     Candidate { id: DriveId::of(&d), name: d.display_name(), drive: d, blocked, warnings, test_file: false }
 }
 
+/// A drive that is only read: no "is it removable" warnings, they would be noise.
+fn read_candidate(d: Drive, blocked: Option<String>) -> Candidate {
+    let warnings = vec![];
+    Candidate { id: DriveId::of(&d), name: d.display_name(), drive: d, blocked, warnings, test_file: false }
+}
+
 fn test_candidate(p: &std::path::Path) -> Option<Candidate> {
     let size = std::fs::metadata(p).ok()?.len();
     let d = Drive {
@@ -129,10 +138,15 @@ pub fn scan(purpose: Purpose) -> Result<Vec<Candidate>, NyError> {
                 Err(e) if e.kind == nyforge_core::ErrorKind::ReadOnly => out.push(candidate(d, Some("Write-protected".into()))),
                 Err(_) => {} // internal, system and virtual disks never appear in NyFormat
             },
+            Purpose::Test => match d.safety {
+                Safety::Safe => out.push(read_candidate(d, None)),
+                Safety::Virtual if allow_virtual() => out.push(read_candidate(d, None)),
+                _ => {} // internal and system disks are never offered
+            },
             Purpose::Flash | Purpose::Boot => match d.safety {
                 Safety::Safe if d.read_only => out.push(candidate(d, Some("Write-protected".into()))),
                 Safety::Safe => out.push(candidate(d, None)),
-                Safety::Virtual if allow_virtual() && purpose != Purpose::Format => out.push(candidate(d, None)),
+                Safety::Virtual if allow_virtual() => out.push(candidate(d, None)),
                 _ => {}
             },
         }

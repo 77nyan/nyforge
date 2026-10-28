@@ -1,4 +1,4 @@
-//! The one drive picker used by NyFlash, NyBoot and NyFormat.
+//! The one drive picker used by every tool.
 //!
 //! * A drive is selected by identity (`DriveId`), never by its row.
 //! * Nothing is ever selected for the person, even when only one drive is plugged in.
@@ -240,7 +240,7 @@ fn drive_row(ui: &mut Ui, c: &Candidate, selected: bool, idx: usize) -> egui::Re
     let p = &painter;
     let base = mix(FIELD, PANEL_HI, hov_t);
     let fill = mix(base, mix(FIELD, ACCENT, 0.16), sel_t);
-    let border = mix(mix(with_alpha(BORDER, 120), BORDER_HI, hov_t), ACCENT_HI, sel_t);
+    let border = mix(mix(with_alpha(BORDER, 120), mix(BORDER_HI, ACCENT_HI, 0.6), hov_t), ACCENT_HI, sel_t);
     p.rect(rect, CornerRadius::same(12), fill, Stroke::new(1.5_f32, border), StrokeKind::Inside);
     let fg = if blocked { DIM } else { TEXT };
     let sub = if blocked { DIM } else { MUTED };

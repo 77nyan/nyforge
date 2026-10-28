@@ -39,6 +39,20 @@ pub fn build_esp_image(size: u64, volume_id: u32, extra: &[(String, Vec<u8>)]) -
         put(&grub, "grub.cfg", assets::GRUB_CFG.as_bytes())?;
         put(&grub, "profiles.cfg", assets::PROFILES_CFG.as_bytes())?;
         put(&grub, "unicode.pf2", assets::UNICODE_FONT)?;
+        // The menu theme lives in grub/themes/nyboot/ (icons/ is a sub-folder).
+        let themes = grub.create_dir("themes").map_err(fat_err)?;
+        let theme = themes.create_dir("nyboot").map_err(fat_err)?;
+        let icons = theme.create_dir("icons").map_err(fat_err)?;
+        for (name, data) in assets::THEME_FILES {
+            match name.strip_prefix("icons/") {
+                Some(icon) => put(&icons, icon, data)?,
+                None => put(&theme, name, data)?,
+            }
+        }
+        let memtest = grub.create_dir("memtest").map_err(fat_err)?;
+        for (name, data) in assets::MEMTEST_FILES {
+            put(&memtest, name, data)?;
+        }
         put(&grub, "nyboot.version", format!("{}\n", assets::VERSION).as_bytes())?;
         for (path, data) in extra {
             let mut dir = root.clone();
@@ -78,6 +92,10 @@ mod tests {
         let mut cfg = String::new();
         root.open_file("grub/grub.cfg").unwrap().read_to_string(&mut cfg).unwrap();
         assert!(cfg.contains("nb_scan"));
+        for f in ["grub/memtest/memtest86+x64.bin", "grub/memtest/memtest86+x64.efi", "grub/memtest/memtest86+ia32.efi", "grub/memtest/memtest86+ia32.bin", "grub/themes/nyboot/theme.txt", "grub/themes/nyboot/theme-large.txt"] {
+            assert!(root.open_file(f).is_ok(), "{f} missing from the boot partition");
+        }
+        assert!(cfg.contains("Memtest86+") && cfg.contains("Shutdown") && !cfg.contains("\"Restart\""));
     }
 
     #[test]

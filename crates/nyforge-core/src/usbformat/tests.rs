@@ -610,3 +610,218 @@ fn a_real_block_device_end_to_end() {
     std::fs::remove_dir_all(d).ok();
     result.unwrap();
 }
+
+// ------------------------------------------------------------------------------ repair
+
+#[test]
+fn repair_says_what_was_wrong_and_clears_what_a_quick_format_would_leave() {
+    use std::io::{Seek, SeekFrom, Write};
+    let d = dir("repair");
+    let img = d.join("stuck.img");
+    let size = 200 * MIB;
+    {
+        let mut f = std::fs::File::create(&img).unwrap();
+        f.set_len(size).unwrap();
+        // a flashed ISO's leftovers: the CD-ROM marker, and an old MBR with one 30 MiB partition at 20 MiB
+        f.seek(SeekFrom::Start(32769)).unwrap();
+        f.write_all(b"CD001").unwrap();
+        let mut mbr = [0u8; 512];
+        mbr[446 + 4] = 0x0C;
+        mbr[446 + 8..446 + 12].copy_from_slice(&((20 * MIB / 512) as u32).to_le_bytes());
+        mbr[446 + 12..446 + 16].copy_from_slice(&((30 * MIB / 512) as u32).to_le_bytes());
+        mbr[510] = 0x55;
+        mbr[511] = 0xAA;
+        f.seek(SeekFrom::Start(0)).unwrap();
+        f.write_all(&mbr).unwrap();
+        // stale labels inside the old partition (start and end), which a quick format leaves alone
+        f.seek(SeekFrom::Start(20 * MIB + 100)).unwrap();
+        f.write_all(b"OLD-FS-LABEL").unwrap();
+        f.seek(SeekFrom::Start(50 * MIB - 100)).unwrap();
+        f.write_all(b"OLD-FS-TAIL").unwrap();
+    }
+    let target = Target::file(&img);
+    let diag = repair::diagnose(&target, size).unwrap();
+    let all = diag.findings.join("\n");
+    assert!(all.contains("ISO 9660"), "{all}");
+    assert!(all.contains("MBR partition table with 1 partition"), "{all}");
+    assert!(all.contains("not in any partition"), "{all}");
+    assert_eq!(diag.old_parts, vec![(20 * MIB, 30 * MIB)]);
+
+    let mut o = opts(vec![one(Fs::Fat32, None, "FIXED")], Scheme::Mbr);
+    o.repair = true;
+    let rep = run(&img, size, o);
+    assert!(rep.notes.iter().any(|n| n.starts_with("Found: ")), "{:?}", rep.notes);
+    assert!(rep.notes.iter().any(|n| n.contains("cleared")), "{:?}", rep.notes);
+    assert_eq!(read_at(&img, 32769, 5), vec![0u8; 5], "the ISO marker is gone");
+    assert_eq!(read_at(&img, 20 * MIB + 100, 12), vec![0u8; 12], "the old partition's start is clean");
+    assert_eq!(read_at(&img, 50 * MIB - 100, 11), vec![0u8; 11], "the old partition's end is clean");
+    assert_eq!(rep.partitions.len(), 1);
+    assert!(rep.usable_bytes >= 190 * MIB);
+    let _ = std::fs::remove_dir_all(d);
+}
+
+// ------------------------------------------------------------------------------ advanced options
+
+#[test]
+fn alignment_moves_every_partition_to_the_erase_block_grid() {
+    let specs = [one(Fs::Fat32, Some(100 * MIB), "A"), one(Fs::ExFat, None, "B")];
+    let p = plan_layout_aligned(1000 * MIB, Scheme::Mbr, &specs, 0, 4 * MIB).unwrap();
+    assert_eq!(p[0].start, 8192, "the first partition starts at 4 MiB");
+    assert_eq!(p[0].sectors, 100 * MIB / 512);
+    assert!(p.iter().all(|x| x.start % 8192 == 0 && x.sectors % 8192 == 0), "{p:?}");
+    let q = plan_layout_aligned(1000 * MIB, Scheme::Mbr, &[one(Fs::Fat32, Some(34 * MIB), "A"), one(Fs::ExFat, None, "B")], 0, 8 * MIB).unwrap();
+    assert_eq!(q[0].sectors * 512, 40 * MIB, "a size is rounded up to the grid");
+    assert!(plan_layout_aligned(1000 * MIB, Scheme::Mbr, &specs, 0, 3 * MIB).is_err());
+    assert!(plan_layout_aligned(1000 * MIB, Scheme::Mbr, &specs, 0, 512).is_err());
+    let (a, b) = (plan_layout(1000 * MIB, Scheme::Mbr, &specs, 0).unwrap(), plan_layout_aligned(1000 * MIB, Scheme::Mbr, &specs, 0, MIB).unwrap());
+    assert!(a.iter().zip(&b).all(|(x, y)| x.start == y.start && x.sectors == y.sectors), "1 MiB is the default grid");
+}
+
+#[test]
+fn a_formatted_image_honours_alignment_and_the_bootable_flag() {
+    let d = dir("align-boot");
+    let img = d.join("a.img");
+    let mut o = opts(vec![one(Fs::Fat32, None, "ALIGNED")], Scheme::Mbr);
+    o.align_bytes = 4 * MIB;
+    o.bootable = true;
+    let rep = run(&img, 200 * MIB, o);
+    assert_eq!(rep.partitions[0].start_bytes, 4 * MIB);
+    let mbr = read_at(&img, 0, 512);
+    assert_eq!(mbr[446], 0x80, "active flag");
+    assert!(rep.notes.iter().any(|n| n.starts_with("Checked:")), "{:?}", rep.notes);
+    // not bootable unless asked
+    let img2 = d.join("b.img");
+    run(&img2, 200 * MIB, opts(vec![one(Fs::Fat32, None, "PLAIN")], Scheme::Mbr));
+    assert_eq!(read_at(&img2, 446, 1)[0], 0x00);
+    let _ = std::fs::remove_dir_all(d);
+}
+
+#[test]
+fn the_read_back_check_notices_a_missing_filesystem() {
+    use std::io::{Seek, SeekFrom, Write};
+    let d = dir("readback");
+    let img = d.join("a.img");
+    let rep = run(&img, 100 * MIB, opts(vec![one(Fs::Fat32, None, "OK")], Scheme::Mbr));
+    let mut t = Target::file(&img);
+    t.capacity = Some(100 * MIB);
+    let plan = plan_layout(100 * MIB, Scheme::Mbr, &[one(Fs::Fat32, None, "OK")], 0).unwrap();
+    assert!(check_result(&t, 100 * MIB, Scheme::Mbr, &plan).unwrap());
+    // wreck the FAT32 boot sector's signature
+    let at = rep.partitions[0].start_bytes + 0x52;
+    let mut f = std::fs::OpenOptions::new().write(true).open(&img).unwrap();
+    f.seek(SeekFrom::Start(at)).unwrap();
+    f.write_all(b"XXXXXXXX").unwrap();
+    drop(f);
+    let e = check_result(&t, 100 * MIB, Scheme::Mbr, &plan).unwrap_err();
+    assert_eq!(e.kind, ErrorKind::VerifyFailed, "{}", e.message);
+    // a table that does not match the plan
+    let wrong = plan_layout(100 * MIB, Scheme::Mbr, &[one(Fs::Fat32, Some(40 * MIB), "OK")], 0).unwrap();
+    assert!(check_result(&t, 100 * MIB, Scheme::Mbr, &wrong).is_err());
+    let _ = std::fs::remove_dir_all(d);
+}
+
+#[test]
+fn discard_is_a_wipe_mode_that_never_fails_on_an_image_file() {
+    assert_eq!("discard".parse::<Wipe>().unwrap(), Wipe::Discard);
+    assert_eq!("trim".parse::<Wipe>().unwrap(), Wipe::Discard);
+    let d = dir("discard");
+    let img = d.join("a.img");
+    let mut o = opts(vec![one(Fs::Fat32, None, "TRIM")], Scheme::Mbr);
+    o.wipe = Wipe::Discard;
+    let rep = run(&img, 100 * MIB, o);
+    assert!(rep.notes.iter().any(|n| n.contains("TRIM") || n.contains("Discard")), "{:?}", rep.notes);
+    let _ = std::fs::remove_dir_all(d);
+}
+
+// ------------------------------------------------------------------ wipe passes and wipe check (no external tools)
+
+mod wipe {
+    use super::*;
+    use std::io::Write;
+
+    fn region(name: &str, size: usize, fill: u8) -> (PathBuf, FileIo) {
+        let p = dir(name).join("disk.img");
+        std::fs::File::create(&p).unwrap().write_all(&vec![fill; size]).unwrap();
+        let f = std::fs::OpenOptions::new().read(true).write(true).open(&p).unwrap();
+        (p, FileIo::new(f, 0, size as u64, 1))
+    }
+
+    fn reporter<'a>(sink: &'a mut dyn FnMut(Event)) -> Reporter<'a> {
+        Reporter::new(sink, "test".into())
+    }
+
+    #[test]
+    fn several_zero_passes_leave_only_zeros_and_are_checked() {
+        let (p, io) = region("zero3", 9 << 20, 0xAB);
+        let mut logs = vec![];
+        let mut sink = |e: Event| {
+            if let Event::Log { message } = e {
+                logs.push(message)
+            }
+        };
+        let never = AtomicBool::new(false);
+        wipe_all(&io, Wipe::Zero, 3, true, &never, &mut reporter(&mut sink)).unwrap();
+        assert!(std::fs::read(&p).unwrap().iter().all(|&b| b == 0));
+        assert!(logs.iter().any(|l| l.contains("Pass 3 of 3")), "{logs:?}");
+        assert!(logs.iter().any(|l| l.contains("Reading the wipe back")));
+    }
+
+    #[test]
+    fn random_wipe_verifies_with_the_last_passes_seed_and_nothing_else() {
+        let (p, io) = region("rand", 5 << 20, 0);
+        let mut sink = |_: Event| {};
+        let never = AtomicBool::new(false);
+        let seed = wipe_all(&io, Wipe::Random, 2, true, &never, &mut reporter(&mut sink)).unwrap();
+        let data = std::fs::read(&p).unwrap();
+        assert!(data.iter().any(|&b| b != 0));
+        // Not the same bytes twice, and not a pattern.
+        assert_ne!(&data[..4096], &data[4096..8192]);
+        // The check passes for the right seed ...
+        check_wipe(&io, false, seed, &never, &mut reporter(&mut sink)).unwrap();
+        // ... and notices a single flipped bit anywhere, and a wrong seed.
+        for at in [0usize, 4 << 20, (5 << 20) - 1] {
+            let mut bad = data.clone();
+            bad[at] ^= 1;
+            std::fs::write(&p, &bad).unwrap();
+            let e = check_wipe(&io, false, seed, &never, &mut reporter(&mut sink)).unwrap_err();
+            assert_eq!(e.kind, ErrorKind::VerifyFailed, "{at}");
+        }
+        std::fs::write(&p, &data).unwrap();
+        assert!(check_wipe(&io, false, seed ^ 1, &never, &mut reporter(&mut sink)).is_err());
+    }
+
+    #[test]
+    fn a_zero_check_notices_one_stray_byte() {
+        let (p, io) = region("strayzero", 3 << 20, 0);
+        let mut sink = |_: Event| {};
+        let never = AtomicBool::new(false);
+        check_wipe(&io, true, 0, &never, &mut reporter(&mut sink)).unwrap();
+        let mut d = std::fs::read(&p).unwrap();
+        d[(3 << 20) - 7] = 1;
+        std::fs::write(&p, d).unwrap();
+        let e = check_wipe(&io, true, 0, &never, &mut reporter(&mut sink)).unwrap_err();
+        assert!(e.message.contains("did not stick"), "{}", e.message);
+    }
+
+    #[test]
+    fn cancelling_stops_a_wipe() {
+        let (_p, io) = region("cancel", 9 << 20, 0x11);
+        let mut sink = |_: Event| {};
+        let stop = AtomicBool::new(true);
+        let e = wipe_all(&io, Wipe::Zero, 2, true, &stop, &mut reporter(&mut sink)).unwrap_err();
+        assert_eq!(e.kind, ErrorKind::Cancelled);
+    }
+
+    #[test]
+    fn format_with_a_checked_multi_pass_wipe_reports_it() {
+        let d = dir("fmtwipe");
+        let img = d.join("a.img");
+        let o = FormatOptions { parts: vec![one(Fs::Fat32, None, "WIPED")], scheme: Scheme::Mbr, wipe: Wipe::Random, wipe_passes: 2, verify_wipe: true, ..Default::default() };
+        let rep = run(&img, 64 << 20, o);
+        assert!(rep.notes.iter().any(|n| n.contains("read back and matches")), "{:?}", rep.notes);
+        assert!(rep.notes.iter().any(|n| n.contains("overwritten 2 times")), "{:?}", rep.notes);
+        // The old wipe data is gone from the partition table area, and the stick is a valid FAT32.
+        let head = read_at(&img, 0, 512);
+        assert_eq!(&head[510..512], &[0x55, 0xAA]);
+    }
+}

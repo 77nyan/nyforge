@@ -1,189 +1,211 @@
-<p align="center"><img src="assets/logo/nyforge-128.png" alt="NyForge logo" width="96"></p>
+<p align="center"><img src="assets/logo/nyforge-256.png" alt="NyForge logo" width="128"></p>
 
 <h1 align="center">NyForge</h1>
 
 <p align="center">
-  A fast, small, native USB toolkit for Linux, macOS and Windows.<br>
-  Flash images, build a multiboot drive, format USB sticks. Rust, no telemetry, no account.
+  <b>A fast, small, native USB toolkit for Linux, macOS and Windows.</b><br>
+  Flash images · build a multiboot drive · format and repair USB sticks · test speed and health<br>
+  <sub>Rust · no telemetry · no account · GPL-3.0-or-later</sub>
 </p>
 
-<p align="center">
-  <img src="docs/screenshots/home.png" alt="NyForge home screen" width="480">
-  <img src="docs/screenshots/flash.png" alt="NyFlash screen" width="480">
-</p>
+<p align="center"><img src="docs/screenshots/home.png" alt="NyForge start screen: NyFlash, NyBoot and NyFormat" width="760"></p>
 
-| Tool | What it does | Command |
+## 📑 Contents
+
+1. [What is NyForge?](#1-what-is-nyforge)
+2. [Install](#2-install)
+   * [2.1 Linux and macOS](#21-linux-and-macos) · [2.2 Windows](#22-windows) · [2.3 Downloads](#23-downloads) · [2.4 What Linux needs](#24-what-linux-needs)
+3. [Using the app](#3-using-the-app)
+   * [3.1 NyFlash](#31--nyflash) · [3.2 Windows ISOs](#32--windows-isos) · [3.3 NyBoot](#33--nyboot) · [3.4 NyFormat](#34--nyformat) · [3.5 NyTest](#35--nytest) · [3.6 Settings](#36--settings)
+4. [Command line](#4-command-line)
+5. [Platform status](#5-platform-status)
+6. [Warnings and limits](#6-warnings-and-limits)
+7. [Build, contribute, license](#7-build-contribute-license)
+
+## 1. What is NyForge?
+
+| | Tool | What it does |
 |---|---|---|
-| **NyFlash** | Writes `.iso` / `.img` files (and `.gz` `.xz` `.bz2` `.zst` `.zip` archives of them) to a USB drive. Turns a Windows ISO into a bootable installer. Can verify the result and check a download's checksum. | `nyforge flash`, `windows`, `verify`, `checksum` |
-| **NyBoot** | Multiboot drive: install once, copy ISOs onto it like files, pick one at boot. Not Ventoy-compatible; no Windows ISOs. | `nyforge boot` |
-| **NyFormat** | Erases and formats USB sticks and SD cards (FAT32, exFAT, FAT16, NTFS, ext2/3/4 where the system allows), checks for bad blocks and fake capacity, restores a drive stuck at a few MB. | `nyforge format` |
+| ⚡ | **NyFlash** | Writes `.iso` / `.img` (and `.gz` `.xz` `.bz2` `.zst` `.zip` of them) to a drive, makes **Windows installers**, verifies the result, checks download checksums. |
+| 🧰 | **NyBoot** | Multiboot drive: install once, copy ISOs on like files, pick one at boot. |
+| 🧹 | **NyFormat** | Formats USB sticks and SD cards (FAT32, exFAT, FAT16, NTFS, ext2/3/4), checks bad blocks and fake capacity, **repairs** broken drives. |
+| 📊 | **NyTest** *(optional: switch it on in Settings)* | Speed test in the style of CrystalDiskMark (with IOPS and latency), sustained-write graph, surface scan, a check that the drive really has the capacity it claims (catches fake-size sticks), and a plain-words verdict. |
 
-A desktop app (`nyforge-gui`) and a command line (`nyforge`) share one engine; the app never touches a drive itself.
-Keys: **Ctrl+1/2/3** (**Cmd** on macOS) open the tools, **Alt+Left** (**Cmd+[**) goes back, **F11** full screen.
-The window shrinks to a quarter-screen tile, so it works in tiling window managers such as Hyprland.
+The start screen shows **three tools**: NyFlash, NyBoot and NyFormat. **NyTest is a fourth tool that is off by default**; you switch it on in Settings (see [3.6](#36--settings): click the cog at the top right, then **Enable NyTest**). A desktop app (`nyforge-gui`) and a command line (`nyforge`) share one engine; the command line always has `nyforge test`. Shortcuts: **Ctrl+1 to 3** open NyFlash, NyBoot and NyFormat (**Ctrl+4** opens NyTest once it is on; **Cmd** on macOS), **Alt+Left** goes back, **F11** is full screen, **Ctrl/Cmd + and −** change the interface size (**0** resets it). The window shrinks to a quarter-screen tile, so it suits tiling window managers, and it remembers its size.
 
-**Safety:** the disk your system runs from is never listed, and NyFormat lists only removable USB drives and SD cards.
-System, internal and virtual disks are refused by the engine, with no override. Every write asks first and re-checks
-the drive right before starting.
+> [!IMPORTANT]
+> **Safety:** the disk your system runs from is never listed. System, internal and virtual disks are refused by the engine, with no override. Every write asks first and re-checks the drive right before starting.
 
-> **Young software.** Tested on Linux and Windows 11 on real hardware; **not tested on macOS** (only built and
-> checked by automatic tests). Read [What has been tested](#what-has-been-tested) before trusting it with a drive
-> that holds anything you care about.
+## 2. Install
 
-## Install
-
-### Linux and macOS
-
-In the project (or unpacked download) folder:
+### 2.1 Linux and macOS
 
 ```sh
-./install.sh --user      # for you only, no password, installs to ~/.local (recommended)
-sudo ./install.sh        # for everyone on this computer
+sudo ./install.sh
 ```
 
-From source it builds first (needs [Rust](https://rustup.rs) 1.88+, Git and a C compiler; a few minutes). Then open
-**NyForge** from the applications menu or run `nyforge-gui`. Remove it with `nyforge-uninstall` (installed next to the
-program; for an all-users copy use its full path with `sudo`).
+From source it builds first (needs [Rust](https://rustup.rs) 1.88+, Git and a C compiler). Then open **NyForge** from the menu or run `nyforge-gui`. Remove it with `nyforge-uninstall`.
 
-* **No menu entry after `--user`**: put `~/.local/bin` on your `PATH`, then log out and in once.
-* **Rust missing under `sudo`**: use `--user`. The installer builds as you and only installs as root.
-* **macOS**: the app is not signed yet; the installer clears the quarantine mark (by hand: `xattr -dr
-  com.apple.quarantine NyForge.app`, or right-click > **Open**). If writing says "Operation not permitted", allow
-  NyForge under Privacy & Security > Full Disk Access.
+<details>
+<summary>Troubleshooting</summary>
 
-### Windows
+* **"NyForge has to be installed with sudo":** the installer must be started with `sudo ./install.sh`; without it, it stops.
+* **Rust missing when building from source:** install it from <https://rustup.rs> as your normal user (not root); the installer builds as you and only copies the files as root.
+* **macOS:** the app is not signed; the installer clears the quarantine mark (by hand: `xattr -dr com.apple.quarantine NyForge.app`, or right-click › **Open**). If writing says "Operation not permitted", allow NyForge under Privacy & Security › Full Disk Access.
+</details>
+
+### 2.2 Windows
 
 1. Download `nyforge-<version>-windows-x86_64.zip` from **Releases** and **Extract All**.
-2. Add `C:\Users\<you>\AppData\Local\Programs\NyForge` to Windows Defender's exclusions, or it may block NyForge's
-   drive access. In PowerShell as administrator:
-   `Add-MpPreference -ExclusionPath "$env:LOCALAPPDATA\Programs\NyForge"`.
-3. Double-click **`install.cmd`** and open **NyForge** from the Start menu. Remove it with *Settings > Apps > NyForge*
-   or `uninstall.cmd` in the install folder.
+2. Exclude the install folder from Windows Defender, or it may block drive access (PowerShell as administrator):
+   `Add-MpPreference -ExclusionPath "$env:LOCALAPPDATA\Programs\NyForge"`
+3. Double-click **`install.cmd`**, then open **NyForge** from the Start menu. Remove it in *Settings › Apps* or with `uninstall.cmd`.
 
-Writing to a drive needs administrator rights; the app offers **Restart as administrator**. The program is not
-code-signed, so SmartScreen may warn: **More info > Run anyway**. To build from source instead, run `build-windows.cmd`
-(needs Rust).
+Writing needs administrator rights (the app offers **Restart as administrator**). The program is not code-signed, so SmartScreen may warn: **More info › Run anyway**.
 
-> **Windows ISOs, please read.**
-> * NyForge's Windows mode makes a bootable installer from a Windows ISO and is meant mainly for custom builds such as
->   Tiny10 and Tiny11. For an official Windows install use Microsoft's **Media Creation Tool**.
-> * **Big Windows installs can fail.** The install image must fit a FAT32 drive: a normal `install.wim` over 4 GB is
->   split automatically, but an `install.esd` or compact image over 4 GB cannot be written (the app warns first).
-> * **Windows ISOs do not work with NyBoot** (custom ones neither): a Windows installer cannot start from a multiboot
->   drive.
-> * Not yet tried on a real Windows Setup boot.
-
-### Downloads (Releases page)
+### 2.3 Downloads
 
 | System | File |
 |---|---|
-| Linux x86-64 (glibc 2.35+) | `nyforge-<version>-linux-x86_64.tar.gz` (app + command line) |
-| macOS 11+ (Apple Silicon and Intel) | `nyforge-<version>-macos-universal.tar.gz` |
+| Linux x86-64 (glibc 2.35+) | `nyforge-<version>-linux-x86_64.tar.gz` (app + CLI) |
+| macOS 11+ (Apple Silicon, Intel) | `nyforge-<version>-macos-universal.tar.gz` |
 | Windows 10/11 x86-64 | `nyforge-<version>-windows-x86_64.zip` |
-| Older Linux, ARM64, Alpine | `nyforge-cli-<version>-linux-<arch>[-musl].tar.gz` (command line only) |
+| Older Linux, ARM64, Alpine | `nyforge-cli-<version>-linux-<arch>[-musl].tar.gz` (CLI only) |
 
-Each has a `.sha256` file (`sha256sum -c`, `shasum -a 256 -c`, or `Get-FileHash`).
+Each has a `.sha256` file.
 
-### What Linux needs
+### 2.4 What Linux needs
 
-Almost nothing; most desktops have it. On Arch / Omarchy:
+Almost nothing. Arch / CachyOS / Omarchy:
 
 ```sh
-sudo pacman -S --needed mesa libxkbcommon wayland libx11 polkit xdg-desktop-portal xdg-desktop-portal-hyprland e2fsprogs ntfs-3g
+sudo pacman -S --needed mesa libxkbcommon wayland libx11 polkit xdg-desktop-portal e2fsprogs ntfs-3g ntfsprogs
 ```
 
-Debian/Ubuntu: `libgl1 libxkbcommon0 libwayland-client0 libx11-6 policykit-1 xdg-desktop-portal` plus a portal backend.
-Fedora: `mesa-libGL libxkbcommon wayland-libs-client libX11 polkit xdg-desktop-portal`. `e2fsprogs` and `ntfs-3g` are
-optional (ext2/3/4 and NTFS formatting). Writing asks for your password through polkit; the app never runs as root.
+Debian/Ubuntu: `libgl1 libxkbcommon0 libwayland-client0 libx11-6 policykit-1 xdg-desktop-portal`. Fedora: `mesa-libGL libxkbcommon wayland-libs-client libX11 polkit xdg-desktop-portal`.
+`e2fsprogs` and `ntfs-3g` are optional (ext2/3/4 and NTFS). On Arch the NTFS formatter `mkntfs` lives in **`ntfsprogs`**. The app never runs as root; writing asks for your password through polkit.
 
-## Using the app
+## 3. Using the app
 
-* **NyFlash**: choose an image (button or drag and drop), choose a drive, **Flash...**, confirm. Real progress, safe
-  stop. No drive is ever pre-selected.
-  * **Windows ISO:** recognised automatically and turned into a bootable installer (UEFI with Secure Boot, and legacy
-    BIOS). Options: skip the Windows 11 hardware checks, legacy BIOS on/off. A build with its own `autounattend.xml`
-    keeps it. "Write the ISO as it is" is still there. See the note under **Windows** above.
-  * **Verify (optional):** tick *Verify when done* before or while it runs, or press *Verify drive* afterwards. It
-    reads the drive back and compares it with the image (a Windows installer: every file and the boot sector). A
-    failure names the first wrong byte or file.
-  * **Checksum:** the *Checksum* link checks a download against a SHA-256, SHA-1 or MD5. A `SHA256SUMS` or
-    `<file>.sha256` next to it is used automatically.
-  * On Windows, NyForge first asks Windows to clean the drive (as balenaEtcher does) and wakes it before the first write.
-    Writes go in pieces of at most 1 MiB; if the stick drops off the USB bus and comes back as the very same drive,
-    the write carries on in smaller pieces (up to three times). A different drive is never written to.
-* **NyBoot**: choose a drive, install NyBoot (erases it), then **Add images**, or copy `.iso` files onto the big
-  `NYBOOT` (exFAT) partition with your file manager. They show up in the boot menu next start. Images are checked when
-  added. Unknown ISOs get a generic start (kernel + initrd found on the image) or use their own `grub.cfg`. For an
-  image's own menu put `<image>.iso.nyboot.cfg` next to it with `set nb_profile="loopbackcfg"`; the same file can add
-  options, e.g. `set nb_params="nomodeset"`.
-* **NyFormat**: choose a drive, a filesystem (only ones this system can make; an **i** button explains a greyed-out
-  one), a label and cluster size, then **Format!**. Options: **Quick format**, **Check device for bad blocks**, and
-  **Restore full capacity** for a drive that shows only a few MB after flashing an ISO. On Windows a plain quick
-  format is done by Windows' own tools (diskpart), which also revive sticks that drop off the bus under raw writes;
-  if they cannot, NyForge's own writer takes over (`--engine windows|own|auto` on the command line).
-* Closing the window during a write asks first, then stops it. Progress and errors are the engine's own; "Verified"
-  appears only when the drive really was read back.
+### 3.1 ⚡ NyFlash
 
-## Command line
+Choose an image (button or drag and drop), choose a drive, **Flash…**, confirm. Real progress, safe stop, and no drive is ever pre-selected.
 
-Everything the app does is `nyforge`, plus Raspberry Pi first-boot setup and drive cloning. Add `--json` for one JSON
-event per line (how the app talks to the engine). `nyforge list` shows drives. Use `sudo` on Linux/macOS, an
-Administrator terminal on Windows.
+* **Verify:** tick *Verify when done*, or press *Verify drive* later. It reads the drive back and compares it with the image; a failure names the first wrong byte or file.
+* **Checksum:** the *Checksum* link checks a download against SHA-256, SHA-1 or MD5; a `SHA256SUMS` next to it is used automatically.
+* **Eject when done** (Linux, macOS): detaches the drive after the write and check, so you can unplug it straight away (`--eject`).
+* **Windows:** NyForge first asks Windows to clean the drive and wakes it before writing. If the stick drops off the USB bus and returns as the same drive, the write carries on in smaller pieces. A different drive is never written to.
+
+### 3.2 🪟 Windows ISOs
+
+Recognised automatically and turned into a bootable installer. Meant mainly for custom builds such as Tiny10 and Tiny11; for an official install, Microsoft's Media Creation Tool is the safer choice.
+
+| Case | What NyForge does |
+|---|---|
+| Normal ISO | One **FAT32** drive, starts on UEFI (Secure Boot too) and legacy BIOS. |
+| `install.wim` over 4 GB | Split automatically for FAT32. |
+| `install.esd` over 4 GB (cannot be split) | **NTFS drive + small UEFI:NTFS boot partition** (the Rufus approach). Chosen automatically or with `--layout ntfs`. **UEFI only**; Linux and Windows only. |
+| Build with its own `autounattend.xml` | Kept exactly as it is. |
+
+Options: skip the Windows 11 hardware checks, legacy BIOS on/off, and under *More setup options* (the same ones Rufus offers): skip the Microsoft-account screens, create a local account, skip the privacy questions, turn off automatic BitLocker encryption, and use this computer's language and region (`--skip-online-account`, `--local-account NAME`, `--skip-privacy-questions`, `--disable-bitlocker`, `--locale auto|en-US`). They are written as an `autounattend.xml`; none of this has been tried on a real Windows Setup yet. NyForge also reads the ISO and warns before writing about rescue discs without an install image, old media without UEFI, ARM64 and 32-bit builds. "Write the ISO as it is" is still there. **Read the [Windows ISO warning](#6-warnings-and-limits) first.**
+
+### 3.3 🧰 NyBoot
+
+See how the boot menu looks: [nyboot-menu.png](docs/screenshots/nyboot-menu.png) (click to open it full size, 1920×1080, with a CachyOS image and the firmware, Memtest86+ and shutdown entries).
+
+Choose a drive, install NyBoot (erases it), then **Add images**, or copy `.iso` files onto the big `NYBOOT` (exFAT) partition. They appear in the boot menu next start. The boot menu is graphical (BIOS and UEFI): a flat grey page with one plain list of your images, small key hints in the corner and a built-in command line, and tools entries for UEFI firmware settings, **Memtest86+** (memory test, bundled, GPL-2) and Shutdown; **Menu settings → plain text mode** switches back to the classic GRUB menu. On a 1440p or 4K screen add `set nb_gfxmode=2560x1440` (or `3840x2160`) to `/nyboot/nyboot.cfg` on the data partition for bigger text. Unknown ISOs get a generic start (kernel + initrd) or use their own `grub.cfg`. **Update bootloader** puts the newest boot code and menu on an existing NyBoot drive without touching your images (`nyforge boot update`). **Menu settings** sets how long the menu waits, which image is preselected, plain text mode and how deep folders are searched (`nyforge boot config`); each image has an **Options** button for extra kernel options such as `nomodeset` (`nyforge boot params`). **Custom themes** (any GRUB 2 theme, as in Ventoy): `nyforge boot theme /dev/sdb ./mytheme` copies the folder (it needs a `theme.txt`; its `.pf2` fonts load by themselves) to `/nyboot/themes/mytheme/` and selects it; change it later under **Menu settings → Theme** or with `nyforge boot config /dev/sdb --theme mytheme` (`--clear-theme` returns to the built-in one). `docs/themes/light` is a ready example. To force an image's own menu, put `<image>.iso.nyboot.cfg` next to it with `set nb_profile="loopbackcfg"`; the same file can add options, e.g. `set nb_params="nomodeset"`.
+
+### 3.4 🧹 NyFormat
+
+Choose a drive, a filesystem (only ones this system can make; the **i** button explains a greyed-out one), a label and cluster size, then **Format!**
+
+* **Repair drive** for a stick stuck at a few MB after flashing an ISO, stuck read-only or failing to format: it diagnoses, releases the drive, clears read-only, wipes the partition areas and formats again.
+* **Quick format**, **bad-block check**, partition alignment, bootable flag, TRIM/discard erase and a read-back check of the result.
+* **Secure erase:** zeros or random data over the whole drive, 1 to 7 passes, and an optional *read it back* check that the erase really stuck (`--wipe zero|random --wipe-passes 3 --verify-wipe`).
+* **Windows:** plain quick formats and NTFS use Windows' own tools (diskpart); if they fail, NyForge's writer takes over (`--engine windows|own|auto`).
+* **Linux NTFS** needs `mkntfs` (package `ntfsprogs` on Arch and Fedora, `ntfs-3g` on Debian/Ubuntu); NyForge names the right one for your distro.
+
+### 3.5 📊 NyTest
+
+*NyTest is off until you turn it on: click the cog at the top right, then **Enable NyTest** (see [3.6](#36--settings)).*
+
+Choose a USB stick or SD card and how thorough to be. NyTest only ever tests **removable drives**: internal disks, and above all the one your system runs from, are never listed and are refused by the engine.
+
+Three levels: **Quick** (about half a minute: speed), **Standard** (a few minutes: speed, a long write that shows where the drive slows down, a read check) or **Full** (everything, including reading the whole drive and proving its capacity; **erases the drive**).
+
+* **Speed, like CrystalDiskMark, but with more to see.** The same measurements (sequential 1 MiB at queue depth 8 and 1, random 4 KiB at queue depth 32 and 1), done the same careful way: uncached I/O, fresh random data that cannot be compressed, the final flush counted, the median of several runs. On top of that: IOPS, latency (typical, 99th and 99.9th percentile, worst) and how much the runs differ. Hover a row to see them.
+* **Sustained write:** a long write with a speed graph. Cheap sticks and cards write fast into a small cache and then fall off a cliff; short benchmarks never show it, and it decides how long a big copy really takes. NyTest marks the point where it happens.
+* **Surface scan:** reads the drive (read-only) and times every block, then paints a map: green fine, amber slow, red unreadable. The quick scan samples about two thousand blocks spread over the drive; the full one reads everything.
+* **Capacity check:** writes test data across the drive and reads it back, to catch fake capacity (a 2 TB stick that holds 16 GB) and failing flash. Quick samples; full is exact. It needs the *Allow erasing the drive* option.
+* **The drive and its link:** model, serial, how it is connected and **at what speed** (a fast stick in a USB 2 port is the commonest reason for "slow"), UASP or not, SD and eMMC card registers, and the drive's own health report when it has one: SMART with hours powered on, temperature, wear and bad-sector counters, read with `smartctl` (USB hard disks and SSDs). **Most flash sticks and SD cards have no such counters at all**; NyTest says so plainly, and for those the surface scan and the capacity check are the health test. eMMC and SD cards that report their wear show it.
+* **A verdict in plain words,** only ever about what was tested, plus an estimated SD speed class (Class 10, U1, U3, V30) and application class (A1, A2). Copy or save the report as text or JSON.
+* **Safe by default:** speed tests use a temporary file on the drive and remove it afterwards; nothing else is written unless you allow erasing. With erasing allowed, speed tests go straight to the drive for the purest numbers.
+
+### 3.6 ⚙️ Settings
+
+The small cog at the top right of the window opens Settings. Everything you change there is saved at once and is still there next time.
+
+* **Start screen:** drag a tool to a new place, or use the arrows under it, to put the tools in the order you like. *Reset order* puts them back.
+* **Optional tools, NyTest:** NyTest is not on the start screen until you switch it on. Open Settings (the cog), press **Enable NyTest**, and it appears as the fourth tool and in the list above, where you can move it like the others. **Turn off** hides it again.
+
+## 4. Command line
+
+Everything the app does is `nyforge` (plus Raspberry Pi first-boot setup). `--json` prints one JSON event per line; `-y` skips confirmation. Use `sudo` on Linux/macOS, an Administrator terminal on Windows; writing to a file never needs root.
 
 ```sh
-nyforge list                                   # drives you can write to
-nyforge inspect ubuntu.iso                     # what is this image?
-sudo nyforge flash ubuntu.iso /dev/sdb --verify   # write it (asks first), then read it back
-sudo nyforge flash raspios.img.xz /dev/sdb --hostname mypi --user me --ssh --ssh-key ~/.ssh/id_ed25519.pub
-sudo nyforge verify ubuntu.iso /dev/sdb         # check a drive later
-nyforge checksum ubuntu.iso --expect SHA256SUMS # or a hash; with neither, a checksum file beside it is used
-sudo nyforge windows Win11.iso /dev/sdb --bypass-checks --verify
-sudo nyforge boot install /dev/sdb             # multiboot drive
-sudo nyforge boot add /dev/sdb *.iso
+nyforge list                                      # drives you can write to
+nyforge inspect ubuntu.iso                        # what is this image?
+sudo nyforge flash ubuntu.iso /dev/sdb --verify   # write, then read back
+sudo nyforge windows Win11.iso /dev/sdb --bypass-checks --verify   # --layout auto|fat32|ntfs
+sudo nyforge boot install /dev/sdb && sudo nyforge boot add /dev/sdb *.iso
+sudo nyforge boot theme /dev/sdb ./mytheme        # custom boot menu theme
 sudo nyforge format /dev/sdb --fs exfat -l HOLIDAY
-sudo nyforge format /dev/sdb --check-bad-blocks --passes 2
-nyforge clone /dev/sdb backup.img.zst
-nyforge doctor                                 # does this machine have what NyForge needs?
+sudo nyforge format /dev/sdb --repair             # also: --align 1M --bootable --wipe discard
+nyforge checksum ubuntu.iso --expect SHA256SUMS
+sudo nyforge test /dev/sdb                        # speed, sustained write, surface scan (nothing is changed)
+nyforge test /media/me/USB --tests speed          # speed of a mounted drive, no root needed
+sudo nyforge test /dev/sdb --preset full --erase --save report.txt   # also proves the capacity: ERASES the drive
+nyforge doctor                                    # does this machine have what NyForge needs?
 ```
 
-`-y/--yes` skips confirmation. Writing to a file path never needs root. Exit codes: 0 success, 1 failure, 2 bad usage,
-130 cancelled.
+Exit codes: 0 success, 1 failure, 2 bad usage, 130 cancelled.
 
-## Build and test
+## 5. Platform status
 
-`cargo build --release -p nyforge -p nyforge-gui`, then `cargo test -p nyforge-core`. The QEMU boot tests need
-`qemu-system-x86_64`, OVMF, `parted`, `mtools`, `dosfstools`, `grub`, `wimlib`, `xorriso`; see `tools/` and run
+| Platform | Status |
+|---|---|
+| 🐧 **Linux** | Tested on real hardware and working. |
+| 🪟 **Windows** | Tested on real hardware (Windows 11) and working. |
+| 🍎 **macOS** | **Not yet tested on real hardware.** It builds and passes automatic tests only. |
+
+Found a bug, or something that looks wrong? Please [open an issue](../../issues) or report it to the repository owner. Include your system, the image you used and what NyForge said; it really helps.
+
+## 6. Warnings and limits
+
+> [!WARNING]
+> **Young software.** Do not trust any new tool blindly with a drive that holds something you care about. Back it up first. macOS is untested, and some Windows features have not yet run on real hardware (see below).
+
+> [!CAUTION]
+> **Windows ISOs, and custom ones above all, are very hard to support completely.** Official, modified, stripped-down and rescue builds differ in layout, boot files, image formats and sizes. NyForge recognises a Windows ISO by its own files and handles the common cases, but it cannot promise that every build writes or starts. If yours fails, try another build or USB port and open an issue naming the ISO.
+>
+> * Not yet tried on real hardware: a Windows Setup boot from a generated drive (FAT32 or NTFS layout), Secure Boot with UEFI:NTFS, and the new Windows diskpart and Repair flows.
+> * Windows ISOs do not work with NyBoot.
+> * The NTFS Windows layout (for an `install.esd` over 4 GB) starts on UEFI only. Verify checks files and boot sectors, not what Windows' boot manager does with them.
+> * Windows 10 or newer; no Windows ARM64.
+
+> [!NOTE]
+> **Verify on Void Linux and the BSDs:** their images carry a small boot partition that other systems rewrite once the drive is plugged in, so a read-back can differ by a few bytes there. NyForge warns first and tells that apart from a failed write.
+
+**Other limits**
+* **NyTest** is new and was tested on Linux only (loop devices and image files; not yet on a real fake-capacity stick, an SD card reader or a USB SSD with SMART). Its Windows and macOS code paths have not run on real hardware. Test results describe the moment of the test; a drive can still fail later.
+* **NyBoot:** no Secure Boot, no persistence, MBR only (up to 2 TiB).
+* **Formatting:** ext2/3/4 and NTFS need Linux tools (`mkfs.ext*`, `mkntfs`); on Windows NTFS is made by Windows; macOS can make neither. Drives over 2 TB default to GPT.
+* **Windows stick problems:** some sticks drop off the bus under raw writes ("Drive disappeared", error 433). Plug straight into the computer, try another port, turn off *USB selective suspend*. NyFormat can usually repair a half-written stick.
+* **Signing:** macOS and Windows builds are not code-signed, so SmartScreen and Gatekeeper may warn.
+
+## 7. Build, contribute, license
+
+`cargo build --release -p nyforge -p nyforge-gui`, then `cargo test -p nyforge-core`. The QEMU boot tests need `qemu-system-x86_64`, OVMF, `parted`, `mtools`, `dosfstools`, `grub`, `wimlib`, `xorriso`:
 `cargo test -p nyforge-core --test nyboot_qemu --test winmedia_qemu -- --ignored --test-threads=1`.
 
-## What has been tested
-
-* **Real hardware (Linux and Windows 11):** flashing (including Alpine Extended), NyBoot, formatting and the app, used
-  by the author on real USB sticks.
-* **Automatic tests (Linux):** writing, read-back verification (a flipped bit anywhere is found, also in a Windows
-  installer), checksums, cancellation, decompression, ISO readers, `install.wim` handling, `nyforge format` (checked
-  with `fsck`, `parted`, `blkid`), QEMU boots of NyBoot and of a Windows-style stick (BIOS and UEFI), and the app under
-  a virtual display.
-* **On GitHub (Windows, macOS, Linux ARM64/musl):** builds, unit tests, drive detection, flashing and reading back a
-  virtual disk.
-* **Not tested by hand:** the macOS app; a real Windows Setup boot; Raspberry Pi first boot; NyBoot with real ISOs of
-  every distro; the capacity test on a counterfeit stick.
-
-## Known limits
-
-* NyBoot: no Secure Boot, no persistence, MBR only (drives up to 2 TiB), no in-place update, no Windows ISOs.
-* Windows installer: an install image over 4 GB that cannot be split is unsupported. Verify checks the files, boot
-  sector and GRUB code, not what Windows' boot manager does with them.
-* ext2/3/4 and NTFS formatting need Linux with `mkfs.ext*` / `mkfs.ntfs`; on Windows NTFS is made by Windows; macOS can
-  make neither. Drives over 2 TB default to GPT.
-* Some USB sticks drop off the bus under raw writes on some Windows setups ("Drive disappeared", error 433). Plug the
-  stick straight into the computer (no hub), try another port, and turn off *USB selective suspend* in Power Options.
-  NyFormat can usually repair a stick left half-written.
-* Windows 10 or newer; no Windows ARM64. macOS and Windows builds are not code-signed.
-
-## Contributing and publishing
-
-Maintainers: [docs/PUBLISHING.md](docs/PUBLISHING.md).
-
-## License
-
-GPL-3.0-or-later. See `LICENSE` and `THIRD-PARTY.md`.
+Maintainers: [docs/PUBLISHING.md](docs/PUBLISHING.md). License: GPL-3.0-or-later, see `LICENSE` and `THIRD-PARTY.md`.

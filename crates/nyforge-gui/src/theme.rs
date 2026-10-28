@@ -19,6 +19,9 @@ pub const DIM: Color32 = Color32::from_rgb(0xa2, 0xa9, 0xb6);
 pub const ACCENT: Color32 = Color32::from_rgb(0x1f, 0x97, 0xea);
 pub const ACCENT_HI: Color32 = Color32::from_rgb(0x56, 0xb8, 0xf8);
 pub const ACCENT_DEEP: Color32 = Color32::from_rgb(0x14, 0x79, 0xc4);
+/// Cards and rows hover in a lighter grey (ring, icon, border); buttons and selections are blue.
+pub const HOVER_LINE: Color32 = Color32::from_rgb(0x8c, 0x93, 0xa2);
+pub const HOVER_GLYPH: Color32 = Color32::from_rgb(0xc4, 0xc9, 0xd3);
 pub const ON_ACCENT: Color32 = Color32::WHITE;
 pub const OK: Color32 = Color32::from_rgb(0x5f, 0xb8, 0x35);
 pub const OK_HI: Color32 = Color32::from_rgb(0x82, 0xd0, 0x57);
@@ -62,7 +65,7 @@ pub fn install(ctx: &Context) {
     v.selection.stroke = Stroke::new(1.0_f32, ACCENT);
     v.window_stroke = Stroke::new(1.0_f32, BORDER_HI);
     v.window_corner_radius = CornerRadius::same(14);
-    v.window_shadow = egui::Shadow { offset: [0, 10], blur: 28, spread: 0, color: Color32::from_black_alpha(110) };
+    v.window_shadow = egui::Shadow { offset: [0, 12], blur: 34, spread: 0, color: Color32::from_black_alpha(120) };
     v.popup_shadow = egui::Shadow { offset: [0, 6], blur: 18, spread: 0, color: Color32::from_black_alpha(130) };
     v.widgets.noninteractive.bg_stroke = Stroke::new(1.0_f32, BORDER);
     for w in [&mut v.widgets.noninteractive, &mut v.widgets.inactive, &mut v.widgets.hovered, &mut v.widgets.active, &mut v.widgets.open] {
@@ -80,7 +83,7 @@ pub fn install(ctx: &Context) {
     style.spacing.button_padding = vec2(16.0, 8.0);
     style.spacing.interact_size = vec2(36.0, 30.0);
     style.spacing.scroll = egui::style::ScrollStyle::floating();
-    style.animation_time = 0.12;
+    style.animation_time = 0.18;
     style.text_styles.insert(egui::TextStyle::Body, FontId::new(14.5, FontFamily::Proportional));
     style.text_styles.insert(egui::TextStyle::Button, FontId::new(14.5, semibold()));
     style.text_styles.insert(egui::TextStyle::Small, FontId::new(12.0, FontFamily::Proportional));
@@ -101,6 +104,17 @@ pub fn with_alpha(c: Color32, a: u8) -> Color32 {
 
 pub fn ease_out(t: f32) -> f32 {
     1.0 - (1.0 - t.clamp(0.0, 1.0)).powi(3)
+}
+
+/// A gentler ease-out (quartic): fast start, long soft landing. For entrances.
+pub fn ease_out_soft(t: f32) -> f32 {
+    1.0 - (1.0 - t.clamp(0.0, 1.0)).powi(4)
+}
+
+/// Smootherstep: slow start and slow end. For things that go back and forth, like hover.
+pub fn ease_smooth(t: f32) -> f32 {
+    let t = t.clamp(0.0, 1.0);
+    t * t * t * (t * (t * 6.0 - 15.0) + 10.0)
 }
 
 /// Eases out with a small overshoot, for things that "pop" into place.
@@ -147,16 +161,16 @@ pub fn reveal(ctx: &Context, name: &str, delay: f32) -> f32 {
         return 1.0;
     }
     let start = shown_since(ctx, Id::new(("reveal", name, SALT.load(Ordering::Relaxed))));
-    let t = ((ctx.input(|i| i.time) - start) as f32 - delay) / 0.26;
+    let t = ((ctx.input(|i| i.time) - start) as f32 - delay) / 0.38;
     if t < 1.0 {
         ctx.request_repaint();
     }
-    ease_out(t)
+    ease_out_soft(t)
 }
 
 /// Draws `add` fading in and rising a few pixels. The element keeps the same total height all the way, so nothing below it jumps.
 pub fn staged<R>(ui: &mut egui::Ui, name: &str, delay: f32, add: impl FnOnce(&mut egui::Ui) -> R) -> R {
-    staged_by(ui, name, delay, 10.0, add)
+    staged_by(ui, name, delay, 12.0, add)
 }
 
 pub fn staged_by<R>(ui: &mut egui::Ui, name: &str, delay: f32, rise: f32, add: impl FnOnce(&mut egui::Ui) -> R) -> R {
@@ -176,12 +190,12 @@ pub fn anim(ctx: &Context, id: Id, on: bool, secs: f32) -> f32 {
     if reduce_motion() {
         return if on { 1.0 } else { 0.0 };
     }
-    ctx.animate_bool_with_time_and_easing(id, on, secs, ease_out)
+    ctx.animate_bool_with_time_and_easing(id, on, secs, ease_smooth)
 }
 
-/// Hover feedback: 100 ms.
+/// Hover feedback: 170 ms, smoothly in and out.
 pub fn hover_t(ctx: &Context, id: Id, on: bool) -> f32 {
-    anim(ctx, id, on, 0.10)
+    anim(ctx, id, on, 0.17)
 }
 
 pub fn semibold_text(text: impl Into<String>, size: f32) -> egui::RichText {
