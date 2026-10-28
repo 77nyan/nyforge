@@ -262,8 +262,8 @@ pub fn gather(s: &Subject) -> DeviceInfo {
     let name = drive.map(|d| d.display_name()).unwrap_or_else(|| s.display());
     let mut details: Vec<(String, String)> = vec![];
     let mut link: Option<LinkInfo> = None;
-    let mut card = None;
-    let mut smart_info = None;
+    let mut card: Option<CardInfo> = None;
+    let mut smart_info: Option<Smart> = None;
     if let Some(d) = drive {
         if !d.vendor.trim().is_empty() && !d.vendor.trim().starts_with("0x") {
             details.push(("Vendor".into(), d.vendor.trim().into()));
