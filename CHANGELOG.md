@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.8
+
+### Fixed
+- **exFAT drives made by NyForge could not be opened** by Linux file managers ("Unable to access ... wrong fs type, bad option, bad superblock"). The root directory started with an empty slot where the volume label belongs, and Linux's exFAT driver stops reading there, so it never found the allocation bitmap. The label entry is now always written, as `mkfs.exfat` does. **Drives formatted with 0.1.7 need to be formatted again.** A new test checks the layout.
+
 ## 0.1.7: the huge update
 
 This is a **huge update**: the biggest one so far. It adds **one new optional tool, NyTest** (off until you switch it on in Settings), and touches the other three, the boot menu and the look of the app.

@@ -245,12 +245,14 @@ impl<I: Io> ExFat<I> {
 
         // Root directory: label, bitmap, upcase.
         let mut rootdir = vec![0u8; cluster_bytes as usize];
-        if !label.is_empty() {
-            rootdir[0] = 0x83;
-            rootdir[1] = label.len() as u8;
-            for (i, u) in label.iter().enumerate() {
-                rootdir[2 + i * 2..4 + i * 2].copy_from_slice(&u.to_le_bytes());
-            }
+        // The label entry is always written, with zero characters when there is no label (this is what mkfs.exfat does too).
+        // Leaving the slot empty put an end-of-directory byte (0x00) in front of the bitmap entry: Linux's exfat driver stops
+        // reading the root directory at the first such byte, never finds the allocation bitmap, and refuses to mount the drive
+        // ("wrong fs type, bad superblock").
+        rootdir[0] = 0x83;
+        rootdir[1] = label.len() as u8;
+        for (i, u) in label.iter().enumerate() {
+            rootdir[2 + i * 2..4 + i * 2].copy_from_slice(&u.to_le_bytes());
         }
         let e = &mut rootdir[32..64];
         e[0] = 0x81;
@@ -978,6 +980,21 @@ mod tests {
         let mut v = vec![0u8; e.size as usize];
         assert_eq!(fs.read_file(&e, 0, &mut v).unwrap(), v.len());
         v
+    }
+
+    #[test]
+    fn root_directory_has_no_gap_before_the_bitmap_with_or_without_a_label() {
+        // Linux's driver reads the root directory only up to the first 0x00 entry, so the label entry (or its empty form) must
+        // come first, with the allocation bitmap and upcase entries right behind it.
+        for (i, label) in ["", "TEST"].into_iter().enumerate() {
+            let d = tdir(&format!("nogap{i}"));
+            let img = d.join("a.img");
+            let fs = ExFat::format(make_image(&img, 64), &FormatParams { label: label.into(), serial: 9, cluster_bytes: Some(4096) }).unwrap();
+            let data = fs.read_dir_bytes(&fs.root_ref()).unwrap();
+            let types: Vec<u8> = data.chunks_exact(32).take_while(|e| e[0] != 0x00).map(|e| e[0]).collect();
+            assert_eq!(types, vec![0x83, 0x81, 0x82], "label {label:?}");
+            assert_eq!(fs.label().unwrap(), label);
+        }
     }
 
     #[test]
