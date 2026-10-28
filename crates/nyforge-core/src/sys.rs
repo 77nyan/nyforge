@@ -137,7 +137,7 @@ pub fn discard_all(file: &std::fs::File, len: u64) -> bool {
     #[cfg(target_os = "linux")]
     {
         use std::os::fd::AsRawFd;
-        const BLKDISCARD: libc::c_ulong = 0x1277;
+        const BLKDISCARD: libc::Ioctl = 0x1277;
         let range: [u64; 2] = [0, len & !511];
         // SAFETY: BLKDISCARD takes a pointer to two u64 (start, length) and only reads them.
         return unsafe { libc::ioctl(file.as_raw_fd(), BLKDISCARD, range.as_ptr()) } == 0;

@@ -150,7 +150,7 @@ pub fn clear_read_only(path: &std::path::Path) -> bool {
     #[cfg(target_os = "linux")]
     {
         use std::os::fd::AsRawFd;
-        const BLKROSET: libc::c_ulong = 0x125D;
+        const BLKROSET: libc::Ioctl = 0x125D;
         if let Ok(f) = std::fs::OpenOptions::new().read(true).open(path) {
             let zero: libc::c_int = 0;
             // SAFETY: BLKROSET takes a pointer to an int and only reads it.

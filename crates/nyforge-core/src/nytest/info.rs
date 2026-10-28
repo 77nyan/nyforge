@@ -261,7 +261,7 @@ pub fn gather(s: &Subject) -> DeviceInfo {
     let drive = s.drive.as_ref();
     let name = drive.map(|d| d.display_name()).unwrap_or_else(|| s.display());
     let mut details: Vec<(String, String)> = vec![];
-    let mut link = None;
+    let mut link: Option<LinkInfo> = None;
     let mut card = None;
     let mut smart_info = None;
     if let Some(d) = drive {
