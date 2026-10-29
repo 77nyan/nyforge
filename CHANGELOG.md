@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.1.92
+
+### Added
+- **The installer asks what to do:** 1 Install, 2 Update, 3 Uninstall, 4 Quit, in the same step-by-step style. **Update** looks up the newest release on GitHub, downloads and checks it and installs it over the old one, keeping the same parts. **Uninstall** asks first, then removes NyForge. Update and Uninstall are greyed out when NyForge is not installed.
+- `sudo ./install.sh --update` does the update without the screen.
+- The README explains how to update.
+
 ## 0.1.91
 
 ### Changed

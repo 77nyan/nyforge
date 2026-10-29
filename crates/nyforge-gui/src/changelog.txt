@@ -1,3 +1,9 @@
+## 0.1.92 | Update and uninstall in the installer
+- The installer asks what to do: Install, Update, Uninstall or Quit, in the same clean style.
+- Update installs the newest release over the old one and keeps the parts you had.
+- Uninstall asks first, then removes NyForge.
+- `sudo ./install.sh --update` updates without the screen; the README explains it.
+
 ## 0.1.91 | Installer shows the version
 - Installing from a clone (`sudo ./install.sh`) is much faster: it downloads the released programs instead of compiling them.
 - The installer now says which version it installs (read from the program itself), in the steps and at the end.

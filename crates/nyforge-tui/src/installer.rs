@@ -1,28 +1,39 @@
-//! The installer screen, started by `install.sh`. It asks, then runs `install.sh --run` and shows each step as it finishes.
-//! Exit code: 0 installed, 3 the person said no, 1 something failed.
+//! The installer screen, started by `install.sh`. It asks what to do (install, update, uninstall, quit), then runs
+//! `install.sh --run` and shows each step as it finishes.
+//! Exit code: 0 done, 3 nothing was changed (quit or "no"), 1 something failed.
 
 use crate::ui::Pal;
 use ratatui::crossterm::event::{self, Event, KeyCode, KeyEventKind, KeyModifiers, MouseButton, MouseEventKind};
 use ratatui::layout::Rect;
-use ratatui::style::{Modifier, Style};
+use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
 use std::io::BufRead;
+use std::path::Path;
 use std::process::{Command, Stdio};
 use std::sync::mpsc::{channel, Receiver};
 use std::time::Duration;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Stage {
-    Ask,
+    Menu,
     Parts,
+    Confirm,
     Running,
     Done,
     Failed,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
+enum Action {
+    Install,
+    Update,
+    Uninstall,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
 enum Hit {
+    Opt(usize),
     Yes,
     No,
     Tui,
@@ -41,6 +52,10 @@ pub struct Opts {
 
 struct Inst {
     stage: Stage,
+    action: Action,
+    /// The version found in the install folder, if NyForge is installed there.
+    installed: Option<String>,
+    sel: usize,
     yes: bool,
     tui: bool,
     gui: bool,
@@ -74,9 +89,39 @@ pub fn parse(args: &[String]) -> Opts {
     o
 }
 
+/// The version of the NyForge installed under `prefix`, if any.
+fn installed_version(prefix: &str) -> Option<String> {
+    let out = Command::new(Path::new(prefix).join("bin/nyforge")).arg("--version").output().ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    String::from_utf8_lossy(&out.stdout).split_whitespace().nth(1).map(|v| v.to_string())
+}
+
 pub fn run(term: &mut crate::Term, o: Opts) -> std::io::Result<i32> {
     let pal = Pal::detect();
-    let mut s = Inst { stage: Stage::Ask, yes: true, tui: true, gui: o.gui, gui_avail: o.gui, focus: 0, script: o.script, prefix: o.prefix, src: o.src, assets: o.assets, steps: vec![], notes: vec![], err: String::new(), rx: None, hits: vec![], tick: 0 };
+    let installed = installed_version(&o.prefix);
+    let mut s = Inst {
+        stage: Stage::Menu,
+        action: Action::Install,
+        sel: if installed.is_some() { 1 } else { 0 },
+        installed,
+        yes: true,
+        tui: true,
+        gui: o.gui,
+        gui_avail: o.gui,
+        focus: 0,
+        script: o.script,
+        prefix: o.prefix,
+        src: o.src,
+        assets: o.assets,
+        steps: vec![],
+        notes: vec![],
+        err: String::new(),
+        rx: None,
+        hits: vec![],
+        tick: 0,
+    };
     loop {
         term.draw(|f| draw(f, &mut s, &pal))?;
         let wait = if s.stage == Stage::Running { Duration::from_millis(90) } else { Duration::from_millis(500) };
@@ -96,9 +141,20 @@ pub fn run(term: &mut crate::Term, o: Opts) -> std::io::Result<i32> {
 fn start(s: &mut Inst) {
     let (tx, rx) = channel();
     let mut cmd = Command::new("sh");
-    cmd.arg(&s.script).args(["--run", "--prefix", &s.prefix, "--tui", if s.tui { "1" } else { "0" }, "--gui", if s.gui { "1" } else { "0" }]);
-    if !s.src.is_empty() {
-        cmd.args(["--src", &s.src, "--assets", &s.assets]);
+    cmd.arg(&s.script).args(["--run", "--prefix", &s.prefix]);
+    match s.action {
+        Action::Install => {
+            cmd.args(["--tui", if s.tui { "1" } else { "0" }, "--gui", if s.gui { "1" } else { "0" }]);
+            if !s.src.is_empty() {
+                cmd.args(["--src", &s.src, "--assets", &s.assets]);
+            }
+        }
+        Action::Update => {
+            cmd.arg("--update");
+        }
+        Action::Uninstall => {
+            cmd.arg("--uninstall");
+        }
     }
     cmd.stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped());
     match cmd.spawn() {
@@ -148,10 +204,42 @@ fn pump(s: &mut Inst) {
 }
 
 fn rows(s: &Inst) -> usize {
-    if s.gui_avail { 3 } else { 2 }
+    if s.gui_avail {
+        2
+    } else {
+        1
+    }
 }
 
-/// Some(exit code) when the installer should close.
+fn available(s: &Inst, i: usize) -> bool {
+    i != 1 && i != 2 || s.installed.is_some()
+}
+
+/// An option in the first question. Some(exit code) when the installer should close.
+fn pick(s: &mut Inst, i: usize) -> Option<i32> {
+    if !available(s, i) {
+        return None;
+    }
+    s.sel = i;
+    match i {
+        0 => {
+            s.action = Action::Install;
+            s.stage = Stage::Parts;
+        }
+        1 => {
+            s.action = Action::Update;
+            start(s);
+        }
+        2 => {
+            s.action = Action::Uninstall;
+            s.yes = false;
+            s.stage = Stage::Confirm;
+        }
+        _ => return Some(3),
+    }
+    None
+}
+
 fn handle(s: &mut Inst, ev: Event) -> Option<i32> {
     match ev {
         Event::Key(k) if k.kind != KeyEventKind::Release => {
@@ -159,11 +247,11 @@ fn handle(s: &mut Inst, ev: Event) -> Option<i32> {
                 return Some(if s.stage == Stage::Done { 0 } else { 3 });
             }
             match s.stage {
-                Stage::Ask => match k.code {
-                    KeyCode::Left | KeyCode::Right | KeyCode::Up | KeyCode::Down | KeyCode::Char('h' | 'l' | 'j' | 'k') | KeyCode::Tab => s.yes = !s.yes,
-                    KeyCode::Char('y') => s.yes = true,
-                    KeyCode::Char('n') => s.yes = false,
-                    KeyCode::Enter | KeyCode::Char(' ') => return choose(s, s.yes),
+                Stage::Menu => match k.code {
+                    KeyCode::Up | KeyCode::Char('k') => s.sel = prev_available(s),
+                    KeyCode::Down | KeyCode::Char('j') | KeyCode::Tab => s.sel = next_available(s),
+                    KeyCode::Char(c @ '1'..='4') => return pick(s, c as usize - '1' as usize),
+                    KeyCode::Enter | KeyCode::Char(' ') => return pick(s, s.sel),
                     KeyCode::Esc | KeyCode::Char('q') => return Some(3),
                     _ => {}
                 },
@@ -175,6 +263,14 @@ fn handle(s: &mut Inst, ev: Event) -> Option<i32> {
                     KeyCode::Esc | KeyCode::Char('q') => return Some(3),
                     _ => {}
                 },
+                Stage::Confirm => match k.code {
+                    KeyCode::Left | KeyCode::Right | KeyCode::Up | KeyCode::Down | KeyCode::Char('h' | 'l' | 'j' | 'k') | KeyCode::Tab => s.yes = !s.yes,
+                    KeyCode::Char('y') => s.yes = true,
+                    KeyCode::Char('n') => s.yes = false,
+                    KeyCode::Enter | KeyCode::Char(' ') => return confirm(s, s.yes),
+                    KeyCode::Esc | KeyCode::Char('q') => return Some(3),
+                    _ => {}
+                },
                 Stage::Running => {}
                 Stage::Done => return Some(0),
                 Stage::Failed => return Some(1),
@@ -183,8 +279,9 @@ fn handle(s: &mut Inst, ev: Event) -> Option<i32> {
         Event::Mouse(m) if matches!(m.kind, MouseEventKind::Down(MouseButton::Left)) => {
             let hit = s.hits.iter().find(|(r, _)| m.column >= r.x && m.column < r.right() && m.row == r.y).map(|(_, h)| *h);
             match (s.stage, hit) {
-                (Stage::Ask, Some(Hit::Yes)) => return choose(s, true),
-                (Stage::Ask, Some(Hit::No)) => return choose(s, false),
+                (Stage::Menu, Some(Hit::Opt(i))) => return pick(s, i),
+                (Stage::Confirm, Some(Hit::Yes)) => return confirm(s, true),
+                (Stage::Confirm, Some(Hit::No)) => return confirm(s, false),
                 (Stage::Parts, Some(Hit::Tui)) => s.tui = !s.tui,
                 (Stage::Parts, Some(Hit::Gui)) => s.gui = !s.gui,
                 (Stage::Parts, Some(Hit::Go)) => start(s),
@@ -198,12 +295,19 @@ fn handle(s: &mut Inst, ev: Event) -> Option<i32> {
     None
 }
 
-fn choose(s: &mut Inst, yes: bool) -> Option<i32> {
-    s.yes = yes;
+fn next_available(s: &Inst) -> usize {
+    (1..=4).map(|d| (s.sel + d) % 4).find(|&i| available(s, i)).unwrap_or(s.sel)
+}
+
+fn prev_available(s: &Inst) -> usize {
+    (1..=4).map(|d| (s.sel + 4 - d % 4) % 4).find(|&i| available(s, i)).unwrap_or(s.sel)
+}
+
+fn confirm(s: &mut Inst, yes: bool) -> Option<i32> {
     if !yes {
         return Some(3);
     }
-    s.stage = Stage::Parts;
+    start(s);
     None
 }
 
@@ -222,83 +326,139 @@ fn draw(f: &mut ratatui::Frame, s: &mut Inst, pal: &Pal) {
     let bold = Style::new().add_modifier(Modifier::BOLD);
     let accent = Style::new().fg(pal.accent).add_modifier(Modifier::BOLD);
     let ok = Style::new().fg(pal.ok).add_modifier(Modifier::BOLD);
-    let mut lines: Vec<Line> = vec![Line::from(vec![Span::styled("NyForge", accent), Span::styled(format!("  {}", env!("CARGO_PKG_VERSION")), dim)]), Line::from("")];
+    let mut head = vec![Span::styled("NyForge", accent), Span::styled(format!("  {}", env!("CARGO_PKG_VERSION")), dim)];
+    if let Some(v) = &s.installed {
+        if s.stage == Stage::Menu {
+            head.push(Span::styled(format!("   installed {v}"), dim));
+        }
+    }
+    let mut lines: Vec<Line> = vec![Line::from(head), Line::from("")];
     let mut hits: Vec<(usize, u16, u16, Hit)> = vec![];
     let bar = || Span::styled("│  ", dim);
+    let rail = || Line::from(Span::styled("│", dim));
+    let button = |t: &str| Span::styled(format!(" {t} "), Style::new().fg(Color::Black).bg(pal.accent).add_modifier(Modifier::BOLD));
 
-    // 1. install?
-    let asking = s.stage == Stage::Ask;
-    if asking {
-        lines.push(Line::from(vec![Span::styled("◆  ", accent), Span::styled("Install NyForge?", bold)]));
-        let y = if s.yes { ("●", ok) } else { ("○", dim) };
-        let n = if !s.yes { ("●", Style::new().fg(pal.accent)) } else { ("○", dim) };
-        hits.push((lines.len(), 3, 7, Hit::Yes));
-        hits.push((lines.len(), 13, 6, Hit::No));
-        lines.push(Line::from(vec![bar(), Span::styled(y.0, y.1), Span::styled(" Yes", if s.yes { bold } else { dim }), Span::raw("     "), Span::styled(n.0, n.1), Span::styled(" No", if !s.yes { bold } else { dim })]));
+    // 1. what to do
+    if s.stage == Stage::Menu {
+        lines.push(Line::from(vec![Span::styled("◆  ", accent), Span::styled("What do you want to do?", bold)]));
+        let names = ["Install", "Update", "Uninstall", "Quit"];
+        for (i, n) in names.iter().enumerate() {
+            let on = available(s, i);
+            let (dot, ds) = if i == s.sel && on { ("●", ok) } else { ("○", dim) };
+            let ns = if !on { dim } else if i == s.sel { bold } else { Style::new() };
+            let mut v = vec![bar(), Span::styled(dot, ds), Span::styled(format!(" {}  ", i + 1), dim), Span::styled(format!("{n:<10}"), ns)];
+            if !on {
+                v.push(Span::styled("not installed", dim));
+            }
+            hits.push((lines.len(), 3, 28, Hit::Opt(i)));
+            lines.push(Line::from(v));
+        }
     } else {
-        lines.push(Line::from(vec![Span::styled("✔  ", ok), Span::raw("Install NyForge  "), Span::styled("Yes", dim)]));
+        let what = match s.action {
+            Action::Install => "Install NyForge",
+            Action::Update => "Update NyForge",
+            Action::Uninstall => "Uninstall NyForge",
+        };
+        lines.push(Line::from(vec![Span::styled("✔  ", ok), Span::raw(what)]));
     }
-    lines.push(Line::from(Span::styled("│", dim)));
-
-    // 2. what to install
-    match s.stage {
-        Stage::Ask => lines.push(Line::from(vec![Span::styled("◇  ", dim), Span::styled("Choose what to install", dim)])),
-        Stage::Parts => {
-            lines.push(Line::from(vec![Span::styled("◆  ", accent), Span::styled("Choose what to install", bold)]));
-            let item = |on: bool, focus: bool, name: &str, note: &str| -> Line<'static> {
-                let (g, gs) = if on { ("✔", ok) } else { ("○", dim) };
-                Line::from(vec![Span::styled("│  ", dim), Span::styled(g, gs), Span::styled(format!(" {name}"), if focus { bold } else { Style::new() }), Span::styled(format!("  {note}"), dim)])
-            };
-            lines.push(Line::from(vec![Span::styled("│  ", dim), Span::styled("✔", Style::new().fg(pal.ok)), Span::styled(" Command line  nyforge", dim)]));
-            hits.push((lines.len(), 3, 40, Hit::Tui));
-            lines.push(item(s.tui, s.focus == 0, "Terminal app", "nyforge -t"));
-            if s.gui_avail {
-                hits.push((lines.len(), 3, 40, Hit::Gui));
-                lines.push(item(s.gui, s.focus == 1, "Desktop app", "menu entry and icon"));
-            }
-            lines.push(Line::from(Span::styled("│", dim)));
-            hits.push((lines.len(), 3, 11, Hit::Go));
-            lines.push(Line::from(vec![Span::styled("│  ", dim), Span::styled(" Install ", Style::new().fg(ratatui::style::Color::Black).bg(pal.accent).add_modifier(Modifier::BOLD)), Span::styled("  enter", dim)]));
-        }
-        _ => {
-            let mut what = vec!["command line"];
-            if s.tui {
-                what.push("terminal app");
-            }
-            if s.gui {
-                what.push("desktop app");
-            }
-            lines.push(Line::from(vec![Span::styled("✔  ", ok), Span::raw("Chosen  "), Span::styled(what.join(", "), dim)]));
-        }
+    if s.stage == Stage::Menu {
+        lines.push(Line::from(Span::styled("└", dim)));
+        s.hits = hits.into_iter().map(|(i, x, w, h)| (Rect { x: area.x + x, y: area.y + i as u16, width: w, height: 1 }, h)).collect();
+        f.render_widget(Paragraph::new(lines), area);
+        return;
     }
-    lines.push(Line::from(Span::styled("│", dim)));
+    lines.push(rail());
 
-    // 3. install
+    match s.action {
+        Action::Install => {
+            // 2. what to install
+            match s.stage {
+                Stage::Menu => lines.push(Line::from(vec![Span::styled("◇  ", dim), Span::styled("Choose what to install", dim)])),
+                Stage::Parts => {
+                    lines.push(Line::from(vec![Span::styled("◆  ", accent), Span::styled("Choose what to install", bold)]));
+                    let item = |on: bool, focus: bool, name: &str, note: &str| -> Line<'static> {
+                        let (g, gs) = if on { ("✔", ok) } else { ("○", dim) };
+                        Line::from(vec![Span::styled("│  ", dim), Span::styled(g, gs), Span::styled(format!(" {name}"), if focus { bold } else { Style::new() }), Span::styled(format!("  {note}"), dim)])
+                    };
+                    lines.push(Line::from(vec![Span::styled("│  ", dim), Span::styled("✔", Style::new().fg(pal.ok)), Span::styled(" Command line  nyforge", dim)]));
+                    hits.push((lines.len(), 3, 40, Hit::Tui));
+                    lines.push(item(s.tui, s.focus == 0, "Terminal app", "nyforge -t"));
+                    if s.gui_avail {
+                        hits.push((lines.len(), 3, 40, Hit::Gui));
+                        lines.push(item(s.gui, s.focus == 1, "Desktop app", "menu entry and icon"));
+                    }
+                    lines.push(rail());
+                    hits.push((lines.len(), 3, 11, Hit::Go));
+                    lines.push(Line::from(vec![Span::styled("│  ", dim), button("Install"), Span::styled("  enter", dim)]));
+                }
+                _ => {
+                    let mut what = vec!["command line"];
+                    if s.tui {
+                        what.push("terminal app");
+                    }
+                    if s.gui {
+                        what.push("desktop app");
+                    }
+                    lines.push(Line::from(vec![Span::styled("✔  ", ok), Span::raw("Chosen  "), Span::styled(what.join(", "), dim)]));
+                }
+            }
+            lines.push(rail());
+        }
+        Action::Uninstall => {
+            if s.stage == Stage::Confirm {
+                lines.push(Line::from(vec![Span::styled("◆  ", accent), Span::styled(format!("Remove NyForge from {}?", s.prefix), bold)]));
+                let y = if s.yes { ("●", Style::new().fg(pal.err)) } else { ("○", dim) };
+                let n = if !s.yes { ("●", ok) } else { ("○", dim) };
+                hits.push((lines.len(), 3, 7, Hit::Yes));
+                hits.push((lines.len(), 13, 6, Hit::No));
+                lines.push(Line::from(vec![bar(), Span::styled(y.0, y.1), Span::styled(" Yes", if s.yes { bold } else { dim }), Span::raw("     "), Span::styled(n.0, n.1), Span::styled(" No", if !s.yes { bold } else { dim })]));
+                lines.push(Line::from(vec![bar(), Span::styled("Your own files and drives are never touched.", dim)]));
+                lines.push(rail());
+            } else {
+                lines.push(Line::from(vec![Span::styled("✔  ", ok), Span::raw("Remove NyForge  "), Span::styled("Yes", dim)]));
+                lines.push(rail());
+            }
+        }
+        Action::Update => {}
+    }
+
+    // the last step: the work itself
+    let title = |running: bool| match (s.action, running) {
+        (Action::Install, true) => format!("Installing to {}", s.prefix),
+        (Action::Install, false) => format!("Installed to {}", s.prefix),
+        (Action::Update, true) => "Updating NyForge".to_string(),
+        (Action::Update, false) => "Update finished".to_string(),
+        (Action::Uninstall, true) => "Removing NyForge".to_string(),
+        (Action::Uninstall, false) => "NyForge was removed".to_string(),
+    };
     match s.stage {
-        Stage::Ask | Stage::Parts => lines.push(Line::from(vec![Span::styled("◇  ", dim), Span::styled(format!("Install to {}", s.prefix), dim)])),
+        Stage::Menu => {}
+        Stage::Parts | Stage::Confirm => {
+            if s.action == Action::Install {
+                lines.push(Line::from(vec![Span::styled("◇  ", dim), Span::styled(format!("Install to {}", s.prefix), dim)]));
+            }
+        }
         Stage::Running => {
             const SPIN: [&str; 8] = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧"];
-            lines.push(Line::from(vec![Span::styled(format!("{}  ", SPIN[s.tick % 8]), accent), Span::styled(format!("Installing to {}", s.prefix), bold)]));
+            lines.push(Line::from(vec![Span::styled(format!("{}  ", SPIN[s.tick % 8]), accent), Span::styled(title(true), bold)]));
             for t in &s.steps {
                 lines.push(Line::from(vec![bar(), Span::styled("✔", ok), Span::raw(format!(" {t}"))]));
             }
         }
         Stage::Done | Stage::Failed => {
             let good = s.stage == Stage::Done;
-            lines.push(Line::from(vec![Span::styled(if good { "✔  " } else { "✘  " }, if good { ok } else { Style::new().fg(pal.err).add_modifier(Modifier::BOLD) }), Span::styled(if good { format!("Installed to {}", s.prefix) } else { "The install stopped".to_string() }, bold)]));
+            lines.push(Line::from(vec![Span::styled(if good { "✔  " } else { "✘  " }, if good { ok } else { Style::new().fg(pal.err).add_modifier(Modifier::BOLD) }), Span::styled(if good { title(false) } else { "It stopped".to_string() }, bold)]));
             for t in &s.steps {
                 lines.push(Line::from(vec![bar(), Span::styled("✔", ok), Span::raw(format!(" {t}"))]));
             }
             if !good {
                 lines.push(Line::from(vec![bar(), Span::styled(if s.err.is_empty() { "Nothing more was changed.".to_string() } else { s.err.clone() }, Style::new().fg(pal.err))]));
             }
-            lines.push(Line::from(Span::styled("│", dim)));
-            if good {
+            lines.push(rail());
+            if good && s.action != Action::Uninstall {
                 let cmd = |c: &str, what: &str| Line::from(vec![bar(), Span::styled(format!("{c:<19}"), accent), Span::styled(what.to_string(), dim)]);
-                if s.tui {
-                    lines.push(cmd("nyforge -t", "the terminal app"));
-                }
-                if s.gui {
+                lines.push(cmd("nyforge -t", "the terminal app"));
+                if s.gui_avail {
                     lines.push(cmd("nyforge-gui", "the desktop app"));
                 }
                 lines.push(cmd("nyforge list", "the command line"));
@@ -306,10 +466,10 @@ fn draw(f: &mut ratatui::Frame, s: &mut Inst, pal: &Pal) {
                 for n in &s.notes {
                     lines.push(Line::from(vec![bar(), Span::styled(n.clone(), Style::new().fg(pal.warn))]));
                 }
-                lines.push(Line::from(Span::styled("│", dim)));
+                lines.push(rail());
             }
             hits.push((lines.len(), 3, 9, Hit::Close));
-            lines.push(Line::from(vec![Span::styled("└  ", dim), Span::styled(" Close ", Style::new().fg(ratatui::style::Color::Black).bg(pal.accent).add_modifier(Modifier::BOLD))]));
+            lines.push(Line::from(vec![Span::styled("└  ", dim), button("Close")]));
         }
     }
     s.hits = hits.into_iter().map(|(i, x, w, h)| (Rect { x: area.x + x, y: area.y + i as u16, width: w, height: 1 }, h)).collect();

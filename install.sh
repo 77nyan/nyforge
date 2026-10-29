@@ -11,12 +11,14 @@
 #   --prefix DIR      install under DIR instead of /usr/local
 #   --yes             do not ask anything: install everything
 #   --build           build from source even when a download exists
+#   --update          install the newest release over the installed one
 #   --uninstall       remove NyForge
 set -eu
 
 here=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd -P)
 prefix=/usr/local
 uninstall=0
+update=0
 run=0
 yes=0
 want_tui=1
@@ -30,6 +32,7 @@ while [ $# -gt 0 ]; do
     --prefix) prefix=$2; shift ;;
     --prefix=*) prefix=${1#--prefix=} ;;
     --uninstall) uninstall=1 ;;
+    --update) update=1 ;;
     --run) run=1 ;;      # used by the installer screen
     --tui) want_tui=$2; shift ;;
     --gui) want_gui=$2; shift ;;
@@ -37,7 +40,7 @@ while [ $# -gt 0 ]; do
     --assets) assets_arg=$2; shift ;;
     --build) force_build=1 ;;
     -y|--yes) yes=1 ;;
-    -h|--help) sed -n '2,14p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    -h|--help) sed -n '2,15p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
     *) echo "install.sh: unknown option $1" >&2; exit 2 ;;
   esac
   shift
@@ -73,27 +76,21 @@ if [ "$uninstall" = 1 ]; then
         "$prefix/share/icons/hicolor/256x256/apps/nyforge.png" \
         "$prefix/share/icons/hicolor/scalable/apps/nyforge.svg" \
         /usr/share/polkit-1/actions/org.nyforge.engine.policy 2>/dev/null || true
-  say "NyForge removed from $prefix"
+  say "Removed the programs"
+  say "Removed the menu entry and icons"
+  say "Removed the documentation"
   exit 0
 fi
 
-# A clone at a released version installs that release's programs from GitHub instead of compiling them
-# (about five minutes). Anything else, such as a changed clone, an unreleased version or no network, is built.
-fetch_release() {
+# Downloads release $1 (x86_64 Linux) into a temporary folder, checks it against its SHA-256 and sets $src and $assets.
+download_release() {
   [ "$(uname -s)" = Linux ] && [ "$(uname -m)" = x86_64 ] || return 1
-  ver=$(sed -n 's/^version = "\(.*\)"/\1/p' "$here/Cargo.toml" | head -1)
-  [ -n "$ver" ] || return 1
-  if [ -e "$here/.git" ]; then
-    command -v git >/dev/null 2>&1 || return 1
-    [ "$(git -c 'safe.directory=*' -C "$here" describe --tags --exact-match 2>/dev/null)" = "v$ver" ] || return 1
-    [ -z "$(git -c 'safe.directory=*' -C "$here" status --porcelain 2>/dev/null)" ] || return 1
-  fi
   command -v curl >/dev/null 2>&1 && command -v sha256sum >/dev/null 2>&1 || return 1
-  name=nyforge-$ver-linux-x86_64
-  url=https://github.com/77nyan/nyforge/releases/download/v$ver
+  name=nyforge-$1-linux-x86_64
+  url=https://github.com/77nyan/nyforge/releases/download/v$1
   dl=$(mktemp -d) || return 1
   trap 'rm -rf "$dl"' EXIT
-  echo "Downloading NyForge $ver..."
+  echo "Downloading NyForge $1..."
   curl -fsL --retry 2 --connect-timeout 10 -o "$dl/$name.tar.gz" "$url/$name.tar.gz" || return 1
   curl -fsL --retry 2 --connect-timeout 10 -o "$dl/$name.tar.gz.sha256" "$url/$name.tar.gz.sha256" || return 1
   (cd "$dl" && sha256sum -c "$name.tar.gz.sha256" >/dev/null 2>&1) || { echo "The download did not match its checksum." >&2; return 1; }
@@ -102,6 +99,54 @@ fetch_release() {
   src=$dl/$name/bin
   assets=$dl/$name
 }
+
+# The newest released version number, from GitHub: the page behind the "latest release" link, or, failing that,
+# the newest version tag.
+latest_version() {
+  v=""
+  if command -v curl >/dev/null 2>&1; then
+    u=$(curl -sL --connect-timeout 10 -o /dev/null -w '%{http_code} %{url_effective}' https://github.com/77nyan/nyforge/releases/latest 2>/dev/null || true)
+    case "$u" in 200\ */releases/tag/v*) v=${u##*/v} ;; esac
+  fi
+  if [ -z "$v" ] && command -v git >/dev/null 2>&1; then
+    v=$(git ls-remote --tags --refs https://github.com/77nyan/nyforge 2>/dev/null | sed -n 's#.*refs/tags/v\([0-9][0-9.]*\)$#\1#p' | sort -V | tail -1)
+  fi
+  case "$v" in ""|*[!0-9.]*) return 1 ;; esac
+  echo "$v"
+}
+
+# A clone at a released version installs that release's programs from GitHub instead of compiling them
+# (about five minutes). Anything else, such as a changed clone, an unreleased version or no network, is built.
+fetch_release() {
+  ver=$(sed -n 's/^version = "\(.*\)"/\1/p' "$here/Cargo.toml" | head -1)
+  [ -n "$ver" ] || return 1
+  if [ -e "$here/.git" ]; then
+    command -v git >/dev/null 2>&1 || return 1
+    [ "$(git -c 'safe.directory=*' -C "$here" describe --tags --exact-match 2>/dev/null)" = "v$ver" ] || return 1
+    [ -z "$(git -c 'safe.directory=*' -C "$here" status --porcelain 2>/dev/null)" ] || return 1
+  fi
+  download_release "$ver"
+}
+
+# Update: install the newest release over the installed one, keeping the same parts.
+if [ "$update" = 1 ]; then
+  cur=$("$bin/nyforge" --version 2>/dev/null | awk 'NR==1 {print $2}')
+  if [ -z "$cur" ]; then
+    echo "NyForge is not installed in $prefix. Install it first: sudo ./install.sh" >&2
+    exit 1
+  fi
+  latest=$(latest_version) || { echo "Could not reach GitHub to look for a newer version." >&2; exit 1; }
+  say "Installed $cur, newest $latest"
+  if [ "$(printf '%s\n%s\n' "$cur" "$latest" | sort -V | tail -1)" = "$cur" ]; then
+    say "NyForge is up to date"
+    exit 0
+  fi
+  [ -x "$bin/nyforge-tui" ] || want_tui=0
+  [ -x "$bin/nyforge-gui" ] || want_gui=0
+  download_release "$latest" || { echo "Could not download NyForge $latest. Try again, or use a newer folder with: sudo ./install.sh" >&2; exit 1; }
+  src_arg=$src
+  assets_arg=$assets
+fi
 
 # Find or build the programs.
 if [ -n "$src_arg" ]; then
@@ -141,12 +186,12 @@ version=$("$src/nyforge" --version 2>/dev/null | awk 'NR==1 {print $2}')
 [ -n "$version" ] || version=unknown
 
 # Ask first, in the installer screen, when there is a terminal to ask in.
-if [ "$run" = 0 ] && [ "$yes" = 0 ] && [ -t 0 ] && [ -t 1 ] && [ -x "$src/nyforge-tui" ]; then
+if [ "$run" = 0 ] && [ "$yes" = 0 ] && [ "$update" = 0 ] && [ -t 0 ] && [ -t 1 ] && [ -x "$src/nyforge-tui" ]; then
   rc=0
   "$src/nyforge-tui" --installer --script "$here/install.sh" --prefix "$prefix" --gui "$have_gui" --src "$src" --assets "$assets" || rc=$?
   case "$rc" in
     0) exit 0 ;;
-    3) echo "Nothing was installed."; exit 0 ;;
+    3) echo "Nothing was changed."; exit 0 ;;
     *) exit 1 ;;
   esac
 fi

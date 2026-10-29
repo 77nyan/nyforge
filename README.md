@@ -52,9 +52,13 @@ sudo ./install.sh
 
 **This is the only way to install NyForge.** Other ways, such as `sh install.sh`, `bash install.sh`, `./install.sh` without sudo or `sudo sh install.sh`, stop on purpose and print `To install the program run: sudo ./install.sh`.
 
-The installer is a small screen in the terminal: it asks **Install NyForge? Yes / No** and what to install (terminal app, desktop app), then shows each step as it finishes. Use the mouse or the arrow keys, **Space** and **Enter**. From source it builds first, unless the folder is a released version, in which case it downloads the programs instead (a changed clone or `--build` compiles, which takes several minutes; needs [Rust](https://rustup.rs) 1.88+, Git and a C compiler). Then open **NyForge** from the menu, or run `nyforge-gui` or `nyforge -t`. Remove it with `sudo nyforge-uninstall`.
+The installer is a small screen in the terminal: it asks what to do (**1 Install, 2 Update, 3 Uninstall, 4 Quit**), then what to install (terminal app, desktop app) and shows each step as it finishes. Use the mouse, the number keys, or the arrow keys, **Space** and **Enter**. From source it builds first, unless the folder is a released version, in which case it downloads the programs instead (a changed clone or `--build` compiles, which takes several minutes; needs [Rust](https://rustup.rs) 1.88+, Git and a C compiler). Then open **NyForge** from the menu, or run `nyforge-gui` or `nyforge -t`. Remove it with `sudo nyforge-uninstall`.
 
 `sudo ./install.sh --yes` installs everything without asking (for scripts), and `--prefix DIR` installs somewhere other than `/usr/local`.
+
+**Updating.** Run `sudo ./install.sh` again and choose **2 Update** (or `sudo ./install.sh --update`). It looks up the newest release on GitHub, downloads it, checks it and installs it over the old one, keeping the same parts you had. If you already have the newest version it says so and changes nothing. Update needs a network connection and an x86_64 Linux computer; otherwise run `git pull` in your clone and install again.
+
+**Uninstalling.** Choose **3 Uninstall**, or run `sudo nyforge-uninstall`. Your own files and drives are never touched.
 
 <details>
 <summary>Troubleshooting</summary>
