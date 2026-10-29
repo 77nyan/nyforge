@@ -41,16 +41,18 @@ if [ -n "$target" ]; then
   rustup target add "$triple" >/dev/null 2>&1 || true
   if [ "$os" = linux ] && [ "$(uname -s)" = Linux ]; then
     command -v cargo-zigbuild >/dev/null 2>&1 || { echo "Cross builds need cargo-zigbuild: pip install ziglang cargo-zigbuild" >&2; exit 1; }
-    cargo zigbuild --release --locked -p nyforge --target "$target"
+    cargo zigbuild --release --locked -p nyforge -p nyforge-tui --target "$target"
   else
-    cargo build --release --locked -p nyforge --target "$triple"
+    cargo build --release --locked -p nyforge -p nyforge-tui --target "$triple"
   fi
   built=target/$triple/release/nyforge
   built_gui=""
+  built_tui=target/$triple/release/nyforge-tui
 else
   case "$host_os" in Linux) os=linux ;; *) echo "Unsupported host $host_os" >&2; exit 1 ;; esac
   arch=$(norm_arch "$(uname -m)"); libc=""
-  cargo build --release --locked -p nyforge -p nyforge-gui
+  cargo build --release --locked -p nyforge -p nyforge-gui -p nyforge-tui
+  built_tui=target/release/nyforge-tui
   built=target/release/nyforge
   built_gui=target/release/nyforge-gui
 fi
@@ -61,6 +63,7 @@ name=$prefix-$ver-$os-$arch$libc
 rm -rf "dist/$name"
 mkdir -p "dist/$name/bin"
 cp "$built" "dist/$name/bin/nyforge"
+cp "$built_tui" "dist/$name/bin/nyforge-tui"
 cp install.sh LICENSE README.md THIRD-PARTY.md "dist/$name/"
 if [ -n "$built_gui" ]; then
   cp "$built_gui" "dist/$name/bin/nyforge-gui"

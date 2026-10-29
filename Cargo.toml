@@ -1,10 +1,10 @@
 [workspace]
 resolver = "2"
-members = ["crates/nyforge-core", "crates/nyforge-cli", "crates/nyforge-gui"]
-default-members = ["crates/nyforge-core", "crates/nyforge-cli", "crates/nyforge-gui"]
+members = ["crates/nyforge-core", "crates/nyforge-cli", "crates/nyforge-gui", "crates/nyforge-tui"]
+default-members = ["crates/nyforge-core", "crates/nyforge-cli", "crates/nyforge-gui", "crates/nyforge-tui"]
 
 [workspace.package]
-version = "0.1.81"
+version = "0.1.9"
 edition = "2021"
 license = "GPL-3.0-or-later"
 authors = ["NyForge contributors"]

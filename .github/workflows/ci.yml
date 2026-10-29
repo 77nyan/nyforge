@@ -33,9 +33,13 @@ jobs:
       - name: Installer works from a clone
         run: |
           if ./install.sh >/dev/null 2>&1; then echo "installer ran without sudo"; exit 1; fi
+          if sh install.sh >/dev/null 2>&1; then echo "sh install.sh worked"; exit 1; fi
+          if sudo sh ./install.sh >/dev/null 2>&1; then echo "sudo sh install.sh worked"; exit 1; fi
+          sh install.sh 2>&1 | grep -q "sudo ./install.sh"
           sudo ./install.sh
           /usr/local/bin/nyforge --version
           test -x /usr/local/bin/nyforge-gui
+          test -x /usr/local/bin/nyforge-tui
           test -x /usr/local/bin/nyforge-uninstall
           test -f /usr/local/share/applications/nyforge.desktop
           grep -q "Exec=/usr/local/bin/nyforge-gui" /usr/local/share/applications/nyforge.desktop
@@ -49,7 +53,7 @@ jobs:
       - uses: actions/checkout@v5
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
-      - run: cargo build --locked --release -p nyforge -p nyforge-gui
+      - run: cargo build --locked --release -p nyforge -p nyforge-gui -p nyforge-tui
       - run: cargo test --locked -p nyforge-core -p nyforge
       - run: target\release\nyforge.exe --version
       - name: Installer (install.cmd) installs and uninstalls

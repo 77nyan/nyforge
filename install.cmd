@@ -21,6 +21,7 @@ powershell -NoProfile -Command "Get-ChildItem -LiteralPath '%~dp0' -Recurse -Fil
 taskkill /f /im nyforge-gui.exe >nul 2>&1
 if not exist "%DIR%" mkdir "%DIR%"
 copy /y "%SRC%nyforge.exe" "%DIR%\" >nul || goto fail
+if exist "%SRC%nyforge-tui.exe" copy /y "%SRC%nyforge-tui.exe" "%DIR%\" >nul
 if exist "%SRC%nyforge-gui.exe" copy /y "%SRC%nyforge-gui.exe" "%DIR%\" >nul || goto fail
 for %%F in (LICENSE README.md THIRD-PARTY.md) do if exist "%~dp0%%F" copy /y "%~dp0%%F" "%DIR%\" >nul
 
@@ -34,7 +35,7 @@ powershell -NoProfile -Command "$d=$env:DIR; $l=Join-Path ([Environment]::GetFol
 
 echo.
 echo NyForge installed in %DIR%
-echo Open "NyForge" from the Start menu. In a new terminal you can also run: nyforge --version
+echo Open "NyForge" from the Start menu. In a new terminal you can also run: nyforge -t
 echo To remove it: Settings ^> Apps ^> NyForge ^> Uninstall, or run "%DIR%\uninstall.cmd".
 echo.
 echo If Windows Defender or another antivirus removes or blocks NyForge, add this folder to its exclusions:

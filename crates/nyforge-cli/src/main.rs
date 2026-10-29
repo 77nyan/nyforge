@@ -31,7 +31,7 @@ use ui::Ui;
 #[command(
     name = "nyforge",
     version = concat!(env!("CARGO_PKG_VERSION"), " (", env!("NYFORGE_BUILD"), ")"),
-    about = "Fast, safe disk image flasher",
+    about = "Fast, safe disk image flasher.  Run `nyforge -t` for the full-screen terminal app.",
     long_about = "NyForge writes disk images (.img, .iso, and .gz/.xz/.bz2/.zst/.zip archives of them, or http(s) URLs) \
                   to USB drives and SD cards. It never offers the drive your system runs from."
 )]
@@ -146,11 +146,37 @@ pub(crate) const EXIT_FAIL: u8 = 1;
 const EXIT_PARTIAL: u8 = 2;
 const EXIT_CANCEL: u8 = 130;
 
+/// `nyforge -t`: the full-screen terminal app (the `nyforge-tui` program installed next to this one).
+fn open_terminal_app() -> ExitCode {
+    let name = if cfg!(windows) { "nyforge-tui.exe" } else { "nyforge-tui" };
+    let beside = std::env::current_exe().ok().and_then(|e| e.parent().map(|d| d.join(name))).filter(|p| p.is_file());
+    let mut cmd = std::process::Command::new(beside.unwrap_or_else(|| name.into()));
+    cmd.env("NYFORGE_BIN", std::env::current_exe().unwrap_or_else(|_| "nyforge".into()));
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt;
+        let e = cmd.exec(); // only returns if it could not start
+        eprintln!("Could not start the terminal app ({name}): {e}\nInstall NyForge again, or build it with: cargo build --release -p nyforge-tui");
+        ExitCode::from(EXIT_FAIL)
+    }
+    #[cfg(not(unix))]
+    match cmd.status() {
+        Ok(s) => ExitCode::from(s.code().unwrap_or(1) as u8),
+        Err(e) => {
+            eprintln!("Could not start the terminal app ({name}): {e}");
+            ExitCode::from(EXIT_FAIL)
+        }
+    }
+}
+
 fn main() -> ExitCode {
     #[cfg(unix)]
     unsafe {
         // Behave like other CLI tools when piped into `head`: stop quietly instead of panicking.
         libc::signal(libc::SIGPIPE, libc::SIG_DFL);
+    }
+    if std::env::args().nth(1).is_some_and(|a| matches!(a.as_str(), "-t" | "--t" | "-terminal" | "--terminal")) {
+        return open_terminal_app();
     }
     let cli = Cli::parse();
     CANCEL_ON_STDIN_CLOSE.store(cli.cancel_on_stdin_close, Ordering::Relaxed);

@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.1.9
+
+### Added
+- **Terminal app.** `nyforge -t` (also `--t` and `-terminal`) opens a full-screen app with NyFlash, NyBoot, NyFormat, NyTest and the version history, a menu on the left and the tool on the right. It runs the same `nyforge` engine as the window, so the same safety rules apply: the system drive is never offered, a drive is checked again just before anything is erased, and an erase has to be confirmed. It asks for `sudo` once, only when a job needs it, and uses about 4 MB of memory. It is installed as `nyforge-tui` next to `nyforge`.
+- **A new installer screen.** `sudo ./install.sh` now opens a small step-by-step screen in the terminal (Install NyForge? Yes / No, what to install, then each step with a green check), usable with the mouse or the keyboard. `--yes` skips it.
+
+### Changed
+- **`sudo ./install.sh` is the only way to install on Linux.** `sh install.sh`, `bash install.sh`, `./install.sh` without sudo and `sudo sh install.sh` stop with `To install the program run: sudo ./install.sh`.
+
+## 0.1.82
+
+### Changed
+- **NyBoot and Secure Boot.** NyBoot's boot files are not signed, so a computer with Secure Boot on lists the drive but silently starts its own system instead. The NyBoot screen now says so after an install or update, and the README explains how to check (`mokutil --sb-state`) and what to do (turn Secure Boot off in the firmware settings).
+
 ## 0.1.81
 
 ### Changed

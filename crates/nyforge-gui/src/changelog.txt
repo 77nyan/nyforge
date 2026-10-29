@@ -1,3 +1,15 @@
+## 0.1.9 | NyForge in the terminal
+- New: a full-screen terminal app. Run `nyforge -t` (or `--t`, `-terminal`).
+- A menu on the left, one tool on the right: NyFlash, NyBoot, NyFormat and NyTest, plus the version history (click the version at the bottom of the menu).
+- Same engine as the window, so the same safety rules: it never offers your system drive and asks before erasing.
+- The installer is now a clean step-by-step screen: Install NyForge? Yes or No, choose what to install, then each step with a green check. It works with the mouse.
+- `sudo ./install.sh` is the only way to install. `sh install.sh` and the like stop and say so.
+- Light: about 4 MB of memory, and it only redraws when something changes.
+
+## 0.1.82 | NyBoot and Secure Boot
+- NyBoot says, when it installs or updates a drive, that Secure Boot has to be off to start it. A computer that lists the drive but starts its own system instead is blocking the unsigned boot files.
+- README: the same note, with how to check.
+
 ## 0.1.81 | NyBoot menu text
 - NyBoot menu text is smaller, so the list no longer looks oversized.
 - Cleaner letters: the menu fonts are now fitted to the pixel grid.

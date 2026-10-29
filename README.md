@@ -8,7 +8,13 @@
   <sub>Rust · no telemetry · no account · GPL-3.0-or-later</sub>
 </p>
 
-<p align="center"><img src="docs/screenshots/home.png" alt="NyForge start screen: NyFlash, NyBoot and NyFormat" width="760"></p>
+<table>
+  <tr><th width="50%">GUI</th><th width="50%">TUI</th></tr>
+  <tr>
+    <td><a href="docs/screenshots/home.png"><img src="docs/screenshots/home.png" alt="NyForge window: NyFlash, NyBoot and NyFormat" width="100%"></a></td>
+    <td><a href="docs/screenshots/tui.png"><img src="docs/screenshots/tui.png" alt="NyForge in the terminal (nyforge -t)" width="100%"></a></td>
+  </tr>
+</table>
 
 ## 📑 Contents
 
@@ -17,7 +23,7 @@
    * [2.1 Linux](#21-linux) · [2.2 Windows](#22-windows) · [2.3 Downloads](#23-downloads) · [2.4 What Linux needs](#24-what-linux-needs)
 3. [Using the app](#3-using-the-app)
    * [3.1 NyFlash](#31--nyflash) · [3.2 Windows ISOs](#32--windows-isos) · [3.3 NyBoot](#33--nyboot) · [3.4 NyFormat](#34--nyformat) · [3.5 NyTest](#35--nytest) · [3.6 Settings](#36--settings)
-4. [Command line](#4-command-line)
+4. [Command line and terminal app](#4-command-line-and-terminal-app)
 5. [Platform status](#5-platform-status)
 6. [Warnings and limits](#6-warnings-and-limits)
 7. [Build, contribute, license](#7-build-contribute-license)
@@ -31,7 +37,7 @@
 | 🧹 | **NyFormat** | Formats USB sticks and SD cards (FAT32, exFAT, FAT16, NTFS, ext2/3/4), checks bad blocks and fake capacity, **repairs** broken drives. |
 | 📊 | **NyTest** *(optional: switch it on in Settings)* | Speed test in the style of CrystalDiskMark (with IOPS and latency), sustained-write graph, surface scan, a check that the drive really has the capacity it claims (catches fake-size sticks), and a plain-words verdict. |
 
-The start screen shows **three tools**: NyFlash, NyBoot and NyFormat. **NyTest is a fourth tool that is off by default**; you switch it on in Settings (see [3.6](#36--settings): click the cog at the top right, then **Enable NyTest**). A desktop app (`nyforge-gui`) and a command line (`nyforge`) share one engine; the command line always has `nyforge test`. Shortcuts: **Ctrl+1 to 3** open NyFlash, NyBoot and NyFormat (**Ctrl+4** opens NyTest once it is on), **Alt+Left** goes back, **F11** is full screen, **Ctrl + and −** change the interface size (**0** resets it). The window shrinks to a quarter-screen tile, so it suits tiling window managers, and it remembers its size.
+The start screen shows **three tools**: NyFlash, NyBoot and NyFormat. **NyTest is a fourth tool that is off by default**; you switch it on in Settings (see [3.6](#36--settings): click the cog at the top right, then **Enable NyTest**). A desktop app (`nyforge-gui`), a terminal app (`nyforge -t`) and a command line (`nyforge`) share one engine; the command line always has `nyforge test`. Shortcuts: **Ctrl+1 to 3** open NyFlash, NyBoot and NyFormat (**Ctrl+4** opens NyTest once it is on), **Alt+Left** goes back, **F11** is full screen, **Ctrl + and −** change the interface size (**0** resets it). The window shrinks to a quarter-screen tile, so it suits tiling window managers, and it remembers its size.
 
 > [!IMPORTANT]
 > **Safety:** the disk your system runs from is never listed. System, internal and virtual disks are refused by the engine, with no override. Every write asks first and re-checks the drive right before starting.
@@ -44,12 +50,16 @@ The start screen shows **three tools**: NyFlash, NyBoot and NyFormat. **NyTest i
 sudo ./install.sh
 ```
 
-From source it builds first (needs [Rust](https://rustup.rs) 1.88+, Git and a C compiler). Then open **NyForge** from the menu or run `nyforge-gui`. Remove it with `nyforge-uninstall`.
+**This is the only way to install NyForge.** Other ways, such as `sh install.sh`, `bash install.sh`, `./install.sh` without sudo or `sudo sh install.sh`, stop on purpose and print `To install the program run: sudo ./install.sh`.
+
+The installer is a small screen in the terminal: it asks **Install NyForge? Yes / No** and what to install (terminal app, desktop app), then shows each step as it finishes. Use the mouse or the arrow keys, **Space** and **Enter**. From source it builds first (needs [Rust](https://rustup.rs) 1.88+, Git and a C compiler). Then open **NyForge** from the menu, or run `nyforge-gui` or `nyforge -t`. Remove it with `sudo nyforge-uninstall`.
+
+`sudo ./install.sh --yes` installs everything without asking (for scripts), and `--prefix DIR` installs somewhere other than `/usr/local`.
 
 <details>
 <summary>Troubleshooting</summary>
 
-* **"NyForge has to be installed with sudo":** the installer must be started with `sudo ./install.sh`; without it, it stops.
+* **"To install the program run: sudo ./install.sh":** the installer only runs as `sudo ./install.sh`, from the folder it is in (`cd` there first).
 * **Rust missing when building from source:** install it from <https://rustup.rs> as your normal user (not root); the installer builds as you and only copies the files as root.
 </details>
 
@@ -146,7 +156,26 @@ The small cog at the top right of the window opens Settings. Everything you chan
 * **Start screen:** drag a tool to a new place, or use the arrows under it, to put the tools in the order you like. *Reset order* puts them back.
 * **Optional tools, NyTest:** NyTest is not on the start screen until you switch it on. Open Settings (the cog), press **Enable NyTest**, and it appears as the fourth tool and in the list above, where you can move it like the others. **Turn off** hides it again.
 
-## 4. Command line
+## 4. Command line and terminal app
+
+**Terminal app.** Prefer the keyboard? Run `nyforge -t` (also `--t` or `-terminal`) for a full-screen version of NyFlash, NyBoot, NyFormat and NyTest, with the menu on the left. It uses the same engine as the window. It asks for `sudo` once, only when a job needs it. You can use the mouse or the keyboard:
+
+| Key | Does |
+|---|---|
+| **↑ ↓** | move between rows (or scroll a long result) |
+| **← →** | change a value, such as the drive, filesystem or an on/off switch |
+| **Enter** | type into a text row, press the button at the bottom, or go back after a result |
+| **Tab** | switch between the menu and the tool |
+| **1 2 3 4** | open NyFlash, NyBoot, NyFormat, NyTest |
+| **v** | the version history (or click the version at the bottom of the menu) |
+| **r** | look for drives again |
+| **c** | cancel a running job |
+| **y / n** | confirm or cancel an erase |
+| **q** | quit |
+
+Paste a path into a text row with your terminal's paste shortcut.
+
+**Command line.**
 
 Everything the app does is `nyforge` (plus Raspberry Pi first-boot setup). `--json` prints one JSON event per line; `-y` skips confirmation. Use `sudo` on Linux, an Administrator terminal on Windows; writing to a file never needs root.
 
@@ -196,14 +225,14 @@ Found a bug, or something that looks wrong? Please [open an issue](../../issues)
 
 **Other limits**
 * **NyTest** is new and was tested on Linux only (loop devices and image files; not yet on a real fake-capacity stick, an SD card reader or a USB SSD with SMART). Its Windows code path has not run on real hardware. Test results describe the moment of the test; a drive can still fail later.
-* **NyBoot:** no Secure Boot, no persistence, MBR only (up to 2 TiB).
+* **NyBoot:** not signed, so it does not start with Secure Boot on (turn Secure Boot off in the firmware settings; a computer that lists the drive but starts its own system instead is doing exactly this). No persistence, MBR only (up to 2 TiB).
 * **Formatting:** ext2/3/4 and NTFS need Linux tools (`mkfs.ext*`, `mkntfs`); on Windows NTFS is made by Windows. Drives over 2 TB default to GPT.
 * **Windows stick problems:** some sticks drop off the bus under raw writes ("Drive disappeared", error 433). Plug straight into the computer, try another port, turn off *USB selective suspend*. NyFormat can usually repair a half-written stick.
 * **Signing:** the Windows build is not code-signed, so SmartScreen may warn.
 
 ## 7. Build, contribute, license
 
-`cargo build --release -p nyforge -p nyforge-gui`, then `cargo test -p nyforge-core`. The QEMU boot tests need `qemu-system-x86_64`, OVMF, `parted`, `mtools`, `dosfstools`, `grub`, `wimlib`, `xorriso`:
+`cargo build --release -p nyforge -p nyforge-gui -p nyforge-tui`, then `cargo test -p nyforge-core`. The QEMU boot tests need `qemu-system-x86_64`, OVMF, `parted`, `mtools`, `dosfstools`, `grub`, `wimlib`, `xorriso`:
 `cargo test -p nyforge-core --test nyboot_qemu --test winmedia_qemu -- --ignored --test-threads=1`.
 
 Maintainers: [docs/PUBLISHING.md](docs/PUBLISHING.md). License: GPL-3.0-or-later, see `LICENSE` and `THIRD-PARTY.md`.

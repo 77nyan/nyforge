@@ -18,6 +18,9 @@ use nyforge_core::nyboot::layout::MIN_DISK_BYTES;
 use nyforge_core::nyboot::probe::{self, Verdict};
 use nyforge_core::usbformat::{fsmake, Fs};
 
+/// NyBoot's boot files are not signed, so a computer with Secure Boot on skips the drive. Said once, where people will read it.
+const SECURE_BOOT_NOTE: &str = "If a computer lists this drive but starts its own system instead, turn Secure Boot off in its firmware settings (NyBoot is not signed).";
+
 const ISO_FILTERS: &[(&str, &[&str])] = &[("ISO images", &["iso", "xz", "gz", "zst"]), ("All files", &["*"])];
 
 #[derive(Clone)]
@@ -228,7 +231,7 @@ impl BootScreen {
             }
             (OpKind::List, _) => {}
             (OpKind::Update, Outcome::Success) => {
-                self.result = Some((Tone::Success, "NyBoot updated".into(), format!("{name} now has the newest boot code and menu. Your images and settings were not touched.")));
+                self.result = Some((Tone::Success, "NyBoot updated".into(), format!("{name} now has the newest boot code and menu. Your images and settings were not touched. {SECURE_BOOT_NOTE}")));
                 relist = true;
             }
             (OpKind::Update, Outcome::Cancelled) => {
@@ -267,7 +270,7 @@ impl BootScreen {
             }
             (OpKind::SaveConfig, _) | (OpKind::SaveParams, _) => {}
             (OpKind::Install, Outcome::Success) => {
-                self.result = Some((Tone::Success, "NyBoot installed".into(), format!("{name} is now a NyBoot drive. Add ISO images below.")));
+                self.result = Some((Tone::Success, "NyBoot installed".into(), format!("{name} is now a NyBoot drive. Add ISO images below. {SECURE_BOOT_NOTE}")));
                 self.status = Status::Installed;
                 relist = true;
             }
