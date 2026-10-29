@@ -3,6 +3,7 @@
 - Update installs the newest release over the old one and keeps the parts you had.
 - Uninstall asks first, then removes NyForge.
 - `sudo ./install.sh --update` updates without the screen; the README explains it.
+- The README picture of the terminal app no longer shows a version number.
 
 ## 0.1.91 | Installer shows the version
 - Installing from a clone (`sudo ./install.sh`) is much faster: it downloads the released programs instead of compiling them.

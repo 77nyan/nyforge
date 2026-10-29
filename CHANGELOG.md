@@ -6,6 +6,7 @@
 - **The installer asks what to do:** 1 Install, 2 Update, 3 Uninstall, 4 Quit, in the same step-by-step style. **Update** looks up the newest release on GitHub, downloads and checks it and installs it over the old one, keeping the same parts. **Uninstall** asks first, then removes NyForge. Update and Uninstall are greyed out when NyForge is not installed.
 - `sudo ./install.sh --update` does the update without the screen.
 - The README explains how to update.
+- The README picture of the terminal app no longer shows a version number, so it does not go out of date.
 
 ## 0.1.91
 
