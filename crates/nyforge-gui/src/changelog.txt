@@ -1,3 +1,7 @@
+## 0.1.91 | Installer shows the version
+- Installing from a clone (`sudo ./install.sh`) is much faster: it downloads the released programs instead of compiling them.
+- The installer now says which version it installs (read from the program itself), in the steps and at the end.
+
 ## 0.1.9 | NyForge in the terminal
 - New: a full-screen terminal app. Run `nyforge -t` (or `--t`, `-terminal`).
 - A menu on the left, one tool on the right: NyFlash, NyBoot, NyFormat and NyTest, plus the version history (click the version at the bottom of the menu).

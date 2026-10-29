@@ -35,6 +35,8 @@ pub struct Opts {
     pub script: String,
     pub prefix: String,
     pub gui: bool,
+    pub src: String,
+    pub assets: String,
 }
 
 struct Inst {
@@ -46,6 +48,8 @@ struct Inst {
     focus: usize,
     script: String,
     prefix: String,
+    src: String,
+    assets: String,
     steps: Vec<String>,
     notes: Vec<String>,
     err: String,
@@ -55,12 +59,14 @@ struct Inst {
 }
 
 pub fn parse(args: &[String]) -> Opts {
-    let mut o = Opts { script: "install.sh".into(), prefix: "/usr/local".into(), gui: false };
+    let mut o = Opts { script: "install.sh".into(), prefix: "/usr/local".into(), gui: false, src: String::new(), assets: String::new() };
     let mut it = args.iter();
     while let Some(a) = it.next() {
         match a.as_str() {
             "--script" => o.script = it.next().cloned().unwrap_or_default(),
             "--prefix" => o.prefix = it.next().cloned().unwrap_or_default(),
+            "--src" => o.src = it.next().cloned().unwrap_or_default(),
+            "--assets" => o.assets = it.next().cloned().unwrap_or_default(),
             "--gui" => o.gui = it.next().is_some_and(|v| v == "1"),
             _ => {}
         }
@@ -70,7 +76,7 @@ pub fn parse(args: &[String]) -> Opts {
 
 pub fn run(term: &mut crate::Term, o: Opts) -> std::io::Result<i32> {
     let pal = Pal::detect();
-    let mut s = Inst { stage: Stage::Ask, yes: true, tui: true, gui: o.gui, gui_avail: o.gui, focus: 0, script: o.script, prefix: o.prefix, steps: vec![], notes: vec![], err: String::new(), rx: None, hits: vec![], tick: 0 };
+    let mut s = Inst { stage: Stage::Ask, yes: true, tui: true, gui: o.gui, gui_avail: o.gui, focus: 0, script: o.script, prefix: o.prefix, src: o.src, assets: o.assets, steps: vec![], notes: vec![], err: String::new(), rx: None, hits: vec![], tick: 0 };
     loop {
         term.draw(|f| draw(f, &mut s, &pal))?;
         let wait = if s.stage == Stage::Running { Duration::from_millis(90) } else { Duration::from_millis(500) };
@@ -91,6 +97,9 @@ fn start(s: &mut Inst) {
     let (tx, rx) = channel();
     let mut cmd = Command::new("sh");
     cmd.arg(&s.script).args(["--run", "--prefix", &s.prefix, "--tui", if s.tui { "1" } else { "0" }, "--gui", if s.gui { "1" } else { "0" }]);
+    if !s.src.is_empty() {
+        cmd.args(["--src", &s.src, "--assets", &s.assets]);
+    }
     cmd.stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped());
     match cmd.spawn() {
         Ok(mut c) => {

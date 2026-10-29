@@ -10,6 +10,7 @@
 # Other options (also with sudo ./install.sh):
 #   --prefix DIR      install under DIR instead of /usr/local
 #   --yes             do not ask anything: install everything
+#   --build           build from source even when a download exists
 #   --uninstall       remove NyForge
 set -eu
 
@@ -20,6 +21,9 @@ run=0
 yes=0
 want_tui=1
 want_gui=1
+force_build=0
+src_arg=""
+assets_arg=""
 
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -29,8 +33,11 @@ while [ $# -gt 0 ]; do
     --run) run=1 ;;      # used by the installer screen
     --tui) want_tui=$2; shift ;;
     --gui) want_gui=$2; shift ;;
+    --src) src_arg=$2; shift ;;       # used by the installer screen
+    --assets) assets_arg=$2; shift ;;
+    --build) force_build=1 ;;
     -y|--yes) yes=1 ;;
-    -h|--help) sed -n '2,13p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    -h|--help) sed -n '2,14p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
     *) echo "install.sh: unknown option $1" >&2; exit 2 ;;
   esac
   shift
@@ -70,13 +77,44 @@ if [ "$uninstall" = 1 ]; then
   exit 0
 fi
 
+# A clone at a released version installs that release's programs from GitHub instead of compiling them
+# (about five minutes). Anything else, such as a changed clone, an unreleased version or no network, is built.
+fetch_release() {
+  [ "$(uname -s)" = Linux ] && [ "$(uname -m)" = x86_64 ] || return 1
+  ver=$(sed -n 's/^version = "\(.*\)"/\1/p' "$here/Cargo.toml" | head -1)
+  [ -n "$ver" ] || return 1
+  if [ -e "$here/.git" ]; then
+    command -v git >/dev/null 2>&1 || return 1
+    [ "$(git -c 'safe.directory=*' -C "$here" describe --tags --exact-match 2>/dev/null)" = "v$ver" ] || return 1
+    [ -z "$(git -c 'safe.directory=*' -C "$here" status --porcelain 2>/dev/null)" ] || return 1
+  fi
+  command -v curl >/dev/null 2>&1 && command -v sha256sum >/dev/null 2>&1 || return 1
+  name=nyforge-$ver-linux-x86_64
+  url=https://github.com/77nyan/nyforge/releases/download/v$ver
+  dl=$(mktemp -d) || return 1
+  trap 'rm -rf "$dl"' EXIT
+  echo "Downloading NyForge $ver..."
+  curl -fsL --retry 2 --connect-timeout 10 -o "$dl/$name.tar.gz" "$url/$name.tar.gz" || return 1
+  curl -fsL --retry 2 --connect-timeout 10 -o "$dl/$name.tar.gz.sha256" "$url/$name.tar.gz.sha256" || return 1
+  (cd "$dl" && sha256sum -c "$name.tar.gz.sha256" >/dev/null 2>&1) || { echo "The download did not match its checksum." >&2; return 1; }
+  tar -xzf "$dl/$name.tar.gz" -C "$dl" || return 1
+  [ -x "$dl/$name/bin/nyforge" ] || return 1
+  src=$dl/$name/bin
+  assets=$dl/$name
+}
+
 # Find or build the programs.
-if [ -x "$here/bin/nyforge" ]; then
+if [ -n "$src_arg" ]; then
+  src=$src_arg
+  assets=${assets_arg:-$here}
+elif [ -x "$here/bin/nyforge" ]; then
   src=$here/bin
   assets=$here
 elif [ "$run" = 1 ] && [ -x "$here/target/release/nyforge" ]; then
   src=$here/target/release
   assets=$here
+elif [ "$force_build" = 0 ] && [ -f "$here/Cargo.toml" ] && fetch_release; then
+  :
 elif [ -f "$here/Cargo.toml" ]; then
   echo "Building NyForge (this takes a few minutes the first time)..."
   if [ -n "${SUDO_USER:-}" ] && [ "$SUDO_USER" != root ]; then
@@ -98,11 +136,14 @@ fi
 
 have_gui=0
 [ -x "$src/nyforge-gui" ] && have_gui=1
+# The version shown is read from the program being installed, so it is always the one that goes onto the computer.
+version=$("$src/nyforge" --version 2>/dev/null | awk 'NR==1 {print $2}')
+[ -n "$version" ] || version=unknown
 
 # Ask first, in the installer screen, when there is a terminal to ask in.
 if [ "$run" = 0 ] && [ "$yes" = 0 ] && [ -t 0 ] && [ -t 1 ] && [ -x "$src/nyforge-tui" ]; then
   rc=0
-  "$src/nyforge-tui" --installer --script "$here/install.sh" --prefix "$prefix" --gui "$have_gui" || rc=$?
+  "$src/nyforge-tui" --installer --script "$here/install.sh" --prefix "$prefix" --gui "$have_gui" --src "$src" --assets "$assets" || rc=$?
   case "$rc" in
     0) exit 0 ;;
     3) echo "Nothing was installed."; exit 0 ;;
@@ -127,7 +168,7 @@ fi
 for f in LICENSE README.md THIRD-PARTY.md; do
   if [ -f "$here/$f" ]; then install -m 0644 "$here/$f" "$prefix/share/doc/nyforge/$f"; fi
 done
-say "Copied the programs"
+say "Copied the programs (NyForge $version)"
 
 # Write the uninstaller next to the program, so it can be removed later without this folder.
 uninst="$bin/nyforge-uninstall"
@@ -218,6 +259,7 @@ fi
 case ":$PATH:" in *":$bin:"*) ;; *) note "$bin is not on your PATH." ;; esac
 if [ "$run" = 0 ]; then
   echo
+  echo "NyForge $version is installed in $bin"
   echo "Terminal app:  nyforge -t"
   [ "$have_gui" = 1 ] && echo "Desktop app:   nyforge-gui"
   echo "Command line:  nyforge list"

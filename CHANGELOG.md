@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.1.91
+
+### Changed
+- **Installing from a clone is much faster.** When the clone is a released version (tag `vX.Y.Z`, no changes), `sudo ./install.sh` downloads that release's programs from GitHub (checked against their SHA-256) instead of compiling them, which took minutes. A changed clone, an unreleased version, another CPU than x86_64 or no network still builds from source, and `--build` forces it.
+- **The installer says which version it installs.** `install.sh` reads the version from the program it is about to install, so the number it shows is always the right one.
+
 ## 0.1.9
 
 ### Added

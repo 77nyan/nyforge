@@ -52,7 +52,7 @@ sudo ./install.sh
 
 **This is the only way to install NyForge.** Other ways, such as `sh install.sh`, `bash install.sh`, `./install.sh` without sudo or `sudo sh install.sh`, stop on purpose and print `To install the program run: sudo ./install.sh`.
 
-The installer is a small screen in the terminal: it asks **Install NyForge? Yes / No** and what to install (terminal app, desktop app), then shows each step as it finishes. Use the mouse or the arrow keys, **Space** and **Enter**. From source it builds first (needs [Rust](https://rustup.rs) 1.88+, Git and a C compiler). Then open **NyForge** from the menu, or run `nyforge-gui` or `nyforge -t`. Remove it with `sudo nyforge-uninstall`.
+The installer is a small screen in the terminal: it asks **Install NyForge? Yes / No** and what to install (terminal app, desktop app), then shows each step as it finishes. Use the mouse or the arrow keys, **Space** and **Enter**. From source it builds first, unless the folder is a released version, in which case it downloads the programs instead (a changed clone or `--build` compiles, which takes several minutes; needs [Rust](https://rustup.rs) 1.88+, Git and a C compiler). Then open **NyForge** from the menu, or run `nyforge-gui` or `nyforge -t`. Remove it with `sudo nyforge-uninstall`.
 
 `sudo ./install.sh --yes` installs everything without asking (for scripts), and `--prefix DIR` installs somewhere other than `/usr/local`.
 
