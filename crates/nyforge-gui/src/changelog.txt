@@ -1,0 +1,46 @@
+## 0.1.81 | NyBoot menu text
+- NyBoot menu text is smaller, so the list no longer looks oversized.
+- Cleaner letters: the menu fonts are now fitted to the pixel grid.
+- The version in Settings opens this history.
+
+## 0.1.8 | exFAT fix
+- Fixed: drives formatted as exFAT by NyForge now open in Linux file managers. Format old ones again.
+- The version is shown at the bottom of Settings.
+- Windows test build fixed.
+
+## 0.1.7 | The huge update
+- NyTest (optional): speed test, sustained write, surface scan, capacity check and drive health.
+- Settings: reorder the start screen and switch NyTest on.
+- NyBoot: new boot menu, custom themes, Memtest86+, bootloader update, per-image boot options.
+- Windows media: smarter ISO detection and more install options. Faster writing and verifying.
+- A calmer look, smoother animation, and a notification on Windows when a job ends.
+- The Linux installer needs sudo. macOS is not available.
+
+## 0.1.6 | Sturdier Windows writing
+- A drive that drops out mid-write is picked up safely.
+- NTFS and plain quick formats use Windows' own tools.
+
+## 0.1.5 | Windows ISOs
+- Compact Tiny11-style ISOs are copied whole when they fit FAT32.
+
+## 0.1.4 | Windows install media and checks
+- Windows installer mode in NyFlash, mainly for Tiny10 and Tiny11 style builds.
+- Optional read-back verify after writing.
+- Checksum check for downloaded images.
+
+## 0.1.3 | NyFormat help
+- An i button on greyed-out file systems explains why, and how to install what is missing.
+- Works fully on Windows.
+
+## 0.1.2 | Installers
+- Linux installer (install.sh) and Windows installer (install.cmd), both with an uninstaller.
+- Automatic checks on every change.
+- Writing copes better with drives that misbehave.
+
+## 0.1.1 | First fixes
+- NyFormat fixes on Windows (capacity and drive letters).
+- Windows installer script.
+
+## 0.1.0 | First release
+- NyFlash writes ISOs and images, NyBoot makes a multiboot USB, NyFormat formats drives.
+- The app and the command line, for Linux and Windows.

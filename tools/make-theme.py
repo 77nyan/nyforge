@@ -28,6 +28,9 @@ ACCENT = (0x3d, 0x93, 0xf5)    # #3d93f5  thin marker on the selected row
 THUMB = (0x6c, 0x74, 0x86)
 TRACK = (0x32, 0x37, 0x42)
 
+# Sizes at 1080p (the other tiers multiply them): list text, key hints, countdown, row height, row padding.
+F_ITEM, F_HINT, F_COUNT, ROW, PAD = 20, 14, 15, 40, 10
+
 # name suffix -> scale. Sizes below are the 1080p design values times the scale.
 TIERS = {"": 1.0, "-large": 1.25, "-xlarge": 1.75}
 
@@ -55,7 +58,7 @@ def pieces():
     for suf, sc in TIERS.items():
         t = suf.replace("-", "_")
         b = max(1, round(sc))
-        row = round(46 * sc)
+        row = round(ROW * sc)
         frame(f"menu{t}", PANEL, BORDER, b)
         frame(f"terminal_box{t}", (0x16, 0x19, 0x1f), BORDER, b)
         # Selected row: a flat lighter bar with an accent marker on its left edge.
@@ -80,10 +83,11 @@ def fonts():
     semi = os.path.join(FONTS, "LiberationSans-Bold.ttf")
     want = set()
     for sc in TIERS.values():
-        want |= {("Regular", round(15 * sc)), ("Regular", round(17 * sc)), ("Regular", round(24 * sc)), ("Bold", round(24 * sc))}
+        want |= {("Regular", round(F_HINT * sc)), ("Regular", round(F_COUNT * sc)), ("Regular", round(F_ITEM * sc)), ("Bold", round(F_ITEM * sc))}
     for style, sz in sorted(want):
         out = os.path.join(OUT, f"font-{style.lower()}-{sz}.pf2")
-        subprocess.check_call(["grub-mkfont", "-s", str(sz), "-r", RANGES, "-o", out,
+        # -a (force autohint) snaps stems and curves to whole pixels: GRUB fonts are 1-bit, so this is what keeps small text even
+        subprocess.check_call(["grub-mkfont", "-a", "-s", str(sz), "-r", RANGES, "-o", out,
                                reg if style == "Regular" else semi], stderr=subprocess.DEVNULL)
 
 
@@ -157,8 +161,8 @@ def themes():
     for suf, sc in TIERS.items():
         txt = THEME.format(
             t=suf.replace("-", "_"), kl=round(24 * sc), kb=round(52 * sc), kh=round(24 * sc),
-            f13=round(15 * sc), f14=round(17 * sc), f18=round(24 * sc), row=round(46 * sc),
-            pad=round(12 * sc), gap=round(2 * sc), sbw=round(6 * sc), th=round(24 * sc))
+            f13=round(F_HINT * sc), f14=round(F_COUNT * sc), f18=round(F_ITEM * sc), row=round(ROW * sc),
+            pad=round(PAD * sc), gap=round(2 * sc), sbw=round(6 * sc), th=round(24 * sc))
         open(os.path.join(OUT, f"theme{suf}.txt"), "w").write(txt)
 
 

@@ -57,8 +57,14 @@ pub fn ui(ui: &mut Ui, sh: &mut Shell) {
     ui.add_space(14.0);
     ui.vertical_centered(|ui| ui.label(small_muted("Your choices are saved automatically.")));
     ui.add_space(14.0);
-    version_badge(ui);
+    let open_id = Id::new("whats-new-open");
+    if version_badge(ui).clicked() {
+        ui.ctx().data_mut(|d| d.insert_temp(open_id, true));
+    }
     ui.add_space(10.0);
+    if ui.ctx().data(|d| d.get_temp::<bool>(open_id)).unwrap_or(false) && whats_new(ui.ctx()) {
+        ui.ctx().data_mut(|d| d.insert_temp(open_id, false));
+    }
 
     if sh.settings != before {
         sh.settings.save();
@@ -66,7 +72,7 @@ pub fn ui(ui: &mut Ui, sh: &mut Shell) {
 }
 
 /// A small, quiet "NyForge v0.1.8" label at the bottom: which version of the program is running.
-fn version_badge(ui: &mut Ui) {
+fn version_badge(ui: &mut Ui) -> egui::Response {
     let name = "NyForge";
     let version = format!("v{}", env!("CARGO_PKG_VERSION"));
     let name_font = FontId::new(12.5, semibold());
@@ -74,10 +80,12 @@ fn version_badge(ui: &mut Ui) {
     let (name_w, ver_w) = ui.fonts(|f| (f.layout_no_wrap(name.into(), name_font.clone(), TEXT).size().x, f.layout_no_wrap(version.clone(), ver_font.clone(), TEXT).size().x));
     let (pad, dot, gap) = (14.0, 6.0, 8.0);
     let size = vec2(pad * 2.0 + dot + gap + name_w + gap + 1.0 + gap + ver_w, 28.0);
-    let (rect, resp) = ui.allocate_exact_size(vec2(ui.available_width(), size.y), Sense::hover());
+    let (rect, _) = ui.allocate_exact_size(vec2(ui.available_width(), size.y), Sense::hover());
     let pill = Rect::from_center_size(rect.center(), size);
+    let resp = ui.interact(pill, Id::new("version-badge"), Sense::click());
+    let hover = hover_t(ui.ctx(), resp.id.with("h"), resp.hovered() || resp.has_focus());
     let p = ui.painter();
-    p.rect(pill, CornerRadius::same(14), with_alpha(FIELD, 120), Stroke::new(1.0_f32, with_alpha(BORDER, 140)), StrokeKind::Inside);
+    p.rect(pill, CornerRadius::same(14), mix(with_alpha(FIELD, 120), PANEL_HI, hover), Stroke::new(1.0_f32, mix(with_alpha(BORDER, 140), HOVER_LINE, hover)), StrokeKind::Inside);
     let y = pill.center().y;
     let mut x = pill.left() + pad;
     p.circle_filled(pos2(x + dot / 2.0, y), dot / 2.0, ACCENT);
@@ -87,7 +95,64 @@ fn version_badge(ui: &mut Ui) {
     p.line_segment([pos2(x, y - 7.0), pos2(x, y + 7.0)], Stroke::new(1.0_f32, with_alpha(BORDER_HI, 160)));
     x += 1.0 + gap;
     p.text(pos2(x, y), egui::Align2::LEFT_CENTER, &version, ver_font, MUTED);
-    resp.widget_info(|| WidgetInfo::labeled(WidgetType::Label, true, format!("{name} version {}", env!("CARGO_PKG_VERSION"))));
+    resp.widget_info(|| WidgetInfo::labeled(WidgetType::Button, true, format!("{name} version {}: show what changed in every version", env!("CARGO_PKG_VERSION"))));
+    if resp.hovered() {
+        ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+    }
+    resp.on_hover_text("What changed in every version")
+}
+
+/// Every version since the first, newest first (changelog.txt next to this program's source).
+fn history() -> Vec<(&'static str, &'static str, Vec<&'static str>)> {
+    let mut out: Vec<(&str, &str, Vec<&str>)> = vec![];
+    for line in include_str!("../changelog.txt").lines() {
+        if let Some(h) = line.strip_prefix("## ") {
+            let (v, t) = h.split_once(" | ").unwrap_or((h, ""));
+            out.push((v, t, vec![]));
+        } else if let (Some(b), Some(last)) = (line.strip_prefix("- "), out.last_mut()) {
+            last.2.push(b);
+        }
+    }
+    out
+}
+
+/// The version history in a dialog. Returns true when it should close.
+fn whats_new(ctx: &egui::Context) -> bool {
+    let mut done = false;
+    let max_h = (ctx.input(|i| i.screen_rect().height()) * 0.62).clamp(200.0, 520.0);
+    let (_, close) = widgets::dialog(ctx, "whats-new", 520.0, |ui| {
+        ui.label(widgets::heading("What changed in every version"));
+        ui.add_space(8.0);
+        egui::ScrollArea::vertical().max_height(max_h).auto_shrink([false, true]).show(ui, |ui| {
+            ui.set_width(ui.available_width());
+            for (i, (v, title, bullets)) in history().into_iter().enumerate() {
+                if i > 0 {
+                    ui.add_space(12.0);
+                }
+                ui.horizontal(|ui| {
+                    ui.label(semibold_text(format!("v{v}"), 15.0));
+                    if i == 0 {
+                        ui.label(RichText::new("this version").color(OK_HI).size(12.0));
+                    }
+                    ui.label(small_muted(title));
+                });
+                ui.add_space(2.0);
+                for b in bullets {
+                    ui.horizontal_top(|ui| {
+                        ui.spacing_mut().item_spacing.x = 6.0;
+                        ui.label(RichText::new("•").color(DIM));
+                        ui.add(egui::Label::new(RichText::new(b).color(MUTED).size(13.0)).wrap());
+                    });
+                }
+            }
+        });
+        widgets::dialog_buttons(ui, |ui| {
+            if Btn::new("Close").show(ui).clicked() {
+                done = true;
+            }
+        });
+    });
+    done || close
 }
 
 // ------------------------------------------------------------------ the tiles

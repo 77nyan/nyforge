@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.1.81
+
+### Changed
+- **NyBoot menu text is smaller.** The list text was 24 px on a 1080p screen, which looked oversized; it is now 20 px with tighter rows (the 1440p and 4K sizes scale with it).
+- **Cleaner letters.** The GRUB menu can only draw text in one colour per pixel (no smoothing), so the fonts are now generated with FreeType's auto-hinter, which snaps strokes to whole pixels. Edges and spacing are much more even.
+
+### Added
+- **Click the version at the bottom of Settings** to see what changed in every version, from 0.1.0 on.
+
 ## 0.1.8
 
 ### Fixed
